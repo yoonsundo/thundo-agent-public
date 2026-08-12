@@ -189,4 +189,4 @@ config/     JSON 설정        published/  발행 완료 마크다운
 state/      런타임 상태       benchmark/  양품 앵커 33편 · 부정 앵커 11편
 ```
 
-에이전트 목록·단계별 계약은 [`CLAUDE.md`](CLAUDE.md) 에 있습니다.
+각 에이전트의 페르소나 정의는 [`.claude/agents/`](.claude/agents/), 단계별 계약은 [`scripts/gates/`](scripts/gates/) 구현에 있습니다. 운영 런북(`CLAUDE.md`)은 크리덴셜 경로와 인프라 정보가 섞여 있어 공개 스냅샷에서 제외됩니다.
