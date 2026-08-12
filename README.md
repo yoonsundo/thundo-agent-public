@@ -48,7 +48,7 @@ flowchart LR
 | 디렉토리 | 무엇인가 | 스택 |
 |---|---|---|
 | **[`blog-publisher/`](./blog-publisher)** | 한국어 콘텐츠 자동발행 파이프라인 — 수집부터 발행·감사까지 | Node.js · 런타임 의존성 1개 |
-| **[`thundorun/`](./thundorun)** | 결과물을 보여주는 포트폴리오 사이트 + 운영 대시보드 | Next.js 15 · React 19 · Supabase · Vercel |
+| **[`thundorun/`](./thundorun)** | 결과물을 보여주는 개인 홈페이지 + 운영 대시보드 | Next.js 15 · React 19 · Supabase · Vercel |
 
 파이프라인이 DB 에 쓰면 사이트가 읽어 보여주고, 관리자가 콘솔에서 내린 지시가 다시 파이프라인으로 돌아가는 **양방향** 구조입니다.
 
@@ -162,7 +162,7 @@ flowchart TD
 <img src="./thundorun/docs/screenshots/home.png" alt="Thundo 홈 — 발행 통계와 인기 블로그" width="800">
 </div>
 
-발행된 글을 보여 주는 포트폴리오 사이트이자, 파이프라인을 들여다보고 조종하는 운영 대시보드입니다.
+발행된 글을 보여 주는 개인 홈페이지이자, 파이프라인을 들여다보고 조종하는 운영 대시보드입니다.
 
 - **Next.js 15 App Router · React 19 · Supabase · next-auth**
 - 서버 컴포넌트에서만 DB 를 읽고, 클라이언트로는 anon 키 경로를 만들지 않습니다
