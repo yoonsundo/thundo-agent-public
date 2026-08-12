@@ -1,0 +1,149 @@
+{
+  "schema": "pipeline/v1",
+  "drafts_per_day": 3,
+  "retry_limit": 2,
+  "length": {
+    "unit": "korean_syllable_no_space",
+    "min": 1500,
+    "max": 2000
+  },
+  "publish_time_kst": "09:00",
+  "dedup": {
+    "method": "char-4gram-minhash",
+    "max_jaccard": 0.25
+  },
+  "fact_gate": {
+    "unsourced_assertion_max_ratio": 0.6,
+    "assertion_sample_max": 5
+  },
+  "self_evolution": {
+    "enabled": true,
+    "note": "ON — 자동학습 가동. 3권분립(제안 elephant↔채점 scorer↔적용 apply-evolve) + 단조성 회귀게이트(fitness +2% & 무회귀만 채택) + applier 가드(SEED·frontmatter·gates·watchdog·audit 침범 거부). 끄려면 false.",
+    "adopt_margin": 1.02
+  },
+  "image": {
+    "judge_authority": "llm",
+    "note": "D2-옵션: LLM judge가 유효후보 중 선택(blind/교차벤더). 발행 차단권은 게이트13+검증자4 불변."
+  },
+  "validators": [
+    "eagle",
+    "bee",
+    "swan",
+    "raven"
+  ],
+  "writers": {
+    "howto": "beaver",
+    "review": "fox",
+    "opinion": "wolf"
+  },
+  "researchers": [
+    "cheetah",
+    "owl",
+    "magpie"
+  ],
+  "topic_targeting": {
+    "niche_keywords": [
+      {
+        "keyword": "cursor fable",
+        "weight": 5
+      },
+      {
+        "keyword": "claude code",
+        "weight": 3
+      },
+      {
+        "keyword": "cursor",
+        "weight": 3
+      },
+      {
+        "keyword": "ai 코딩",
+        "weight": 3
+      },
+      {
+        "keyword": "코딩 에이전트",
+        "weight": 3
+      },
+      {
+        "keyword": "chatgpt",
+        "weight": 3
+      },
+      {
+        "keyword": "n8n",
+        "weight": 3
+      },
+      {
+        "keyword": "ai자동화",
+        "weight": 3
+      },
+      {
+        "keyword": "n8n 자동화",
+        "weight": 3
+      },
+      {
+        "keyword": "claude cowork",
+        "weight": 3
+      },
+      {
+        "keyword": "copilot",
+        "weight": 2
+      },
+      {
+        "keyword": "windsurf",
+        "weight": 2
+      },
+      {
+        "keyword": "ai coding",
+        "weight": 2
+      },
+      {
+        "keyword": "llm 코딩",
+        "weight": 2
+      },
+      {
+        "keyword": "vibe coding",
+        "weight": 2
+      },
+      {
+        "keyword": "바이브 코딩",
+        "weight": 2
+      },
+      {
+        "keyword": "코딩 자동화",
+        "weight": 2
+      },
+      {
+        "keyword": "ai 코드리뷰",
+        "weight": 2
+      },
+      {
+        "keyword": "ai콘텐츠",
+        "weight": 2
+      },
+      {
+        "keyword": "make 자동화",
+        "weight": 2
+      },
+      {
+        "keyword": "ai 도구",
+        "weight": 2
+      },
+      {
+        "keyword": "ai 비전",
+        "weight": 2
+      },
+      {
+        "keyword": "mcp",
+        "weight": 1
+      },
+      {
+        "keyword": "자동화",
+        "weight": 1
+      },
+      {
+        "keyword": "ai성능",
+        "weight": 1
+      }
+    ],
+    "note": "주제 선정 STEP 2 가중 스코어링용. topic.title+keywords 필드 소문자 부분매칭 → weight 합산 → stable sort 내림차순. 3-3b applier는 이 키만 수정 가능."
+  }
+}

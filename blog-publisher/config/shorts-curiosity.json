@@ -1,0 +1,198 @@
+{
+  "schema": "shorts-curiosity/v1",
+  "enabled": true,
+  "note": "독립 '설마 진짜?' 호기심 쇼츠 채널. 근거: .omc/specs/deep-interview-curiosity-shorts-channel.md. 블로그 미러 아님 — 주제 백로그(경량) 유지, 매일 반전·호기심 강도 best-pick 1건만 JIT 풀 제작. 제작 엔진은 scripts/shorts/ 재사용.",
+  "channel": {
+    "brand": "thundo",
+    "tone": "가볍고 캐주얼, 스크롤을 멈추게 하는 반전·호기심. 학술적 무겁게 X.",
+    "language": "ko",
+    "domains": [
+      "과학",
+      "인체",
+      "역사",
+      "일상",
+      "심리",
+      "우주",
+      "음식",
+      "동물",
+      "기술"
+    ]
+  },
+  "backlog": {
+    "path_note": "state/shorts-backlog/backlog.jsonl (append-only), produced 상태는 shorts-curiosity-index.json",
+    "target_size": 50,
+    "refill_batch": 10,
+    "refill_threshold": null,
+    "refill_buffer_days": 4,
+    "refill_note": "보충 트리거 임계(잔여 건수). null=pick.daily_target × refill_buffer_days(3×4 → 12건)로 유도, 숫자면 그 값(target_size 로 클램프). ⚠ 이전 하드코딩 임계는 min(target_size,5)=잔여 5건 미만이라 풀 바닥을 긁었고, 배치 10건 중 고득점 reveal 이 먼저 소진돼 **바닥에 whatif 가 농축**되면서 07-28 3/3편 whatif 편중이 발생했다(실측: reveal 평균 0.816 vs whatif 0.817 — 앵글 선호가 아니라 보충 타이밍 문제). 소비량이 3편/일로 일정하므로 임계를 올려도 보충 빈도(배치10÷3편 ≈ 3일 1회)는 그대로고 풀 수위만 올라간다.",
+    "reddit_seed": {
+      "enabled": true,
+      "dedup": {
+        "enabled": true,
+        "window_days": 8,
+        "word_jaccard": 0.6,
+        "mark_limit": 30,
+        "note": "주간 top(t=week)은 최대 7일간 같은 글을 반환 → 보충 주기(2~3일)마다 같은 원문이 재수집된다(07-27/07-29 중복 업로드 원인 중 하나). 한국어 재작성 결과의 sha1 dedup 으로는 못 잡으므로 **원문 단계**에서 억제한다. ①같은 배치 내 교차게시 중복은 단어 Jaccard >= word_jaccard 로 제거 ②window_days 안에 이미 프롬프트로 넘긴 글 URL은 **뒤로 밀기**(제외 아님 — state/shorts-curiosity-reddit-seen.json, 최초 관찰시각 미갱신 → 창 만료 후 완전 신규 복귀). mark_limit=backlog.mjs 가 프롬프트에 넘기는 앞자리 분량(30)만 기록 — 100건을 다 기록하면 1~2회 보충 만에 reddit 씨앗이 말라 LLM 오리지널(whatif 출처)만 남아 앵글 편중이 악화된다. 7일 창보다 하루 넉넉하게 8일."
+      },
+      "subreddits": [
+        "todayilearned",
+        "YouShouldKnow",
+        "history",
+        "science",
+        "Damnthatsinteresting"
+      ],
+      "timeframe": "week",
+      "limit": 20,
+      "seed_ratio": 0.85,
+      "note": "실제 인기 검증된 사실 씨앗을 Reddit top(주간)에서 수집→한국어 재구성. seed_ratio=Reddit 비율(나머지는 장르확장 오리지널). 2026-08-05 공개 조회수 실측에서 07-21~08-03 Reddit 씨앗 평균 1150회(n=13), LLM 오리지널 평균 753회(n=21)라 검증 소재 비중을 0.70→0.85로 높였다."
+    },
+    "angles": {
+      "whatif_ratio": 0,
+      "note": "발굴 배치 중 '만약 ~였다면?' 앵글 비율. 0=성과 계측 복구 전까지 일시중지. 2026-08-05 공개 조회수 실측에서 reveal 평균 1022회(n=20), whatif 평균 738회(n=14), 최근 구간은 776회 대 524회였고 07-28~29 5편 연속 편중까지 겹쳤다. ratio=0은 하드 중지라 슬롯 공백 시에도 whatif 상한 완화 대상이 되지 않는다."
+    },
+    "note": "주제/반전훅 수준의 경량 메타만. 풀 대본·이미지는 선정된 1건만 JIT."
+  },
+  "pick": {
+    "best_n": 1,
+    "best_n_note": "일일 제작 편수(AC-8). 1=기존 단일 best-pick. 2~3=상위 N건 병행 제작·발행. 성과 피드백은 별도 analytics-collect/self-evolve 경로가 담당한다.",
+    "daily_target": 3,
+    "daily_whatif_cap": null,
+    "daily_angle_note": "US-003. daily_target=하루 3편. daily_whatif_cap=null이면 daily_target×whatif_ratio 내림으로 유도한다. whatif_ratio=0은 실측 저성과 대응 하드 중지라 완화하지 않고 reveal 또는 produced 재고가 슬롯을 채운다. ratio>0의 일일 상한만 후보 고갈 시 기존 최소완화 규칙을 쓴다.",
+    "similarity": {
+      "enabled": true,
+      "bigram_jaccard": 0.45,
+      "substring": true,
+      "min_chars": 6,
+      "note": "US-003 유사주제 중복 차단. 백로그 dedup 은 subject sha1 이라 문구만 바뀐 재탕이 통과했다(07-27 '총알 없는 총으로 자기 머리를 쐈던 배우' ↔ 07-29 동일 주제+'(공포탄의 진실)'). 정규화(공백·괄호·문장부호 제거 + 어절 조사 절단) 후 ①포함관계(substring, min_chars 이상) 또는 ②문자 bigram Jaccard >= bigram_jaccard 면 기제작·기업로드 주제와 중복으로 보고 제외. 0.45=서로 다른 주제(≈0.2)는 통과, 문구변형 재탕(≈0.7+)은 차단하는 밴드."
+    },
+    "weights": {
+      "surprise": 0.34,
+      "scrollstop": 0.21,
+      "relatability": 0.3,
+      "freshness": 0.15,
+      "reddit_bonus": 0.12
+    },
+    "note": "best-pick 가중합. relatability는 개인 이해관계·서사 몰입, reddit_bonus는 실세계 관심이 선검증된 씨앗 가산점이다. 2026-08-05 공개 조회수 실측 격차(Reddit 1150회 vs LLM 753회)에 따라 reddit_bonus를 0.05→0.12로 올렸다."
+  },
+  "factcheck": {
+    "enabled": true,
+    "level": "light",
+    "note": "가벼운 안전망 — 플로시빌리티 + 기본 출처 1개. verdict=ok|doubtful|false. false/doubtful 은 제작 스킵(백로그 보류)."
+  },
+  "script": {
+    "min_cards": 3,
+    "max_cards": 4,
+    "narration_syllables_per_card": [
+      35,
+      60
+    ],
+    "total_target_sec": [
+      30,
+      65
+    ]
+  },
+  "imagen": {
+    "enabled": true,
+    "key_file": "~/.secrets/gsc-sa.json",
+    "model": "gemini-2.5-flash-image",
+    "location": "us-central1",
+    "aspect_ratio": "9:16"
+  },
+  "tts": {
+    "provider": "google",
+    "prosody": {
+      "enabled": true,
+      "pause_after_sentence_ms": 260,
+      "pause_after_comma_ms": 130,
+      "note": "AC-3 프로소디 — 평평한 톤 제거. google=문장부호 기반 자연 pause 정규화(+ Chirp3 markup 지원 시 주입, 미지원이면 평문 폴백). edge=SSML prosody/break 완전 지원."
+    },
+    "google": {
+      "key_file": "~/.secrets/gsc-sa.json",
+      "language_code": "ko-KR",
+      "voice": "ko-KR-Chirp3-HD-Erinome",
+      "speaking_rate": 1,
+      "sample_rate": 24000,
+      "encoding": "MP3",
+      "voice_note": "사용자 선택(2026-07-13): Erinome(여성)"
+    },
+    "edge": {
+      "voice": "ko-KR-SunHiNeural",
+      "rate": "+6%",
+      "pitch": "+0Hz",
+      "note": "AC-3 무료 Edge-TTS(Microsoft) 한국어 뉴럴 A/B 후보. pip 없이 Node 글로벌 WebSocket WSS 합성. SSML prosody 완전 지원. provider='edge' 로 스왑 시 활성. 후보: ko-KR-SunHiNeural(여)·ko-KR-InJoonNeural(남)."
+    },
+    "elevenlabs": {
+      "api_key_env": "ELEVENLABS_API_KEY",
+      "voice_id": "",
+      "model": "eleven_multilingual_v2"
+    }
+  },
+  "motion": {
+    "ken_burns": true,
+    "zoom_per_sec": 0.02,
+    "max_zoom": 1.14
+  },
+  "visual": {
+    "mode": "hybrid",
+    "mode_note": "hybrid=카드 슬라이드는 실모션 푸티지·hook/cta 는 AI 히어로 이미지 / footage=전부 푸티지 / image=전부 AI(레거시)"
+  },
+  "footage": {
+    "enabled": true,
+    "provider_order": [
+      "pexels",
+      "pixabay"
+    ],
+    "size": "medium",
+    "min_duration_sec": 3,
+    "cache_dir": "state/shorts-footage",
+    "note": "무료 실모션 스톡. 키는 .env PEXELS_API_KEY/PIXABAY_API_KEY. 검색은 대본의 영어 footage_keywords. 무키/실패 시 AI이미지→그라데이션 폴백."
+  },
+  "captions": {
+    "kinetic": true,
+    "group_words": 2,
+    "note": "키네틱 단어단위 자막(카라오케 팝). caption 을 group_words 어절씩 쪼개 발화에 맞춰 순차 하이라이트. 정적 슬라이드쇼감 제거.",
+    "vertical_pct": 50,
+    "vertical_note": "자막 세로 위치(화면 높이 %). 50=중앙. 폰 세로 UI(하단 제목·설명·버튼) 가림 회피용(2026-07-17). 15~85 클램프."
+  },
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "speed": 1,
+    "pad_head_sec": 0.3,
+    "pad_tail_sec": 0.6,
+    "speed_note": "속도는 TTS speaking_rate(1.0)로 처리 — atempo 제거해 딕션 보존(2026-07-13, 2026-07-16 1.2→1.0 딕션 개선)",
+    "bgm": {
+      "enabled": false,
+      "file": "assets/shorts/bgm.mp3",
+      "volume": 0.12
+    }
+  },
+  "gates": {
+    "aspect_w": 1080,
+    "aspect_h": 1920,
+    "min_sec": 15,
+    "max_sec": 75,
+    "max_mb": 100,
+    "require_audio": true,
+    "max_leading_silence_sec": 1.5,
+    "slideshow_risk": {
+      "enabled": true,
+      "min_motion_score": 0.8,
+      "note": "실모션 부족(정적 슬라이드쇼) 차단. 인접프레임 차분 평균휘도 < min 이면 fail. 하이브리드(푸티지+켄번스)는 통상 통과, 전부 정지+무모션이면 fail."
+    }
+  },
+  "upload": {
+    "enabled": true,
+    "privacy_status": "public",
+    "category_id": "27",
+    "oauth_token_file": "~/.secrets/youtube-curiosity-oauth.json",
+    "note": "별도 채널. 채널+OAuth 준비 후 enabled=true. 기존 shorts upload 과 토큰 파일 분리. privacy=public(2026-07-14 사용자 결정 — 홈페이지 임베드+채널 성장)."
+  },
+  "inventory": {
+    "target": 3,
+    "refill_enabled": true,
+    "max_refill_per_slot": 1,
+    "note": "US-008 결방 방지 재고 버퍼. target=유지할 produced(제작완료·미업로드) 편수. claude -p 전역 장애일(07-25·07-26 각 3슬롯 전멸→0편)에 신규 제작이 불가해도 이 재고로 하루 3편을 채운다. max_refill_per_slot=한 슬롯당 추가 제작 상한(비용 억제). refill_enabled=false 면 재고 보충 끔(폴백 업로드는 유지)."
+  }
+}

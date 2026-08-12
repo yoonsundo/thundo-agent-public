@@ -1,0 +1,32 @@
+[
+  {
+    "period": "2024.06 ~ 현재",
+    "title": "AI 연구소 RAG 시스템 · 데이터 수집 플랫폼",
+    "summary": "Elasticsearch 인프라 구축, 크롤링 파이프라인 설계, FastAPI 분석 API 개발"
+  },
+  {
+    "period": "2024 ~ 현재",
+    "title": "LangGraph 기반 멀티 AI에이전트 챗봇 구축",
+    "summary": "Vue 3 프론트엔드, FastAPI 백엔드, 시각화·리포트 워크플로우 개발"
+  },
+  {
+    "period": "2024 ~ 현재",
+    "title": "LLM 기반 데이터 분석 보고서 자동 생성 시스템",
+    "summary": "대용량 보고서 생성 엔진, 멀티 LLM 추상화, Word 변환기 개발"
+  },
+  {
+    "period": "2024",
+    "title": "티머니 공공기관 모니터링 시스템",
+    "summary": "크롤링 자동화, Streamlit 대시보드, 실시간 알림 파이프라인 개발"
+  },
+  {
+    "period": "2019.05 ~ 2024.05",
+    "title": "인천대학교 통합정보시스템",
+    "summary": "Java/Spring·Oracle 기반 예산·회계·구매·자산·시설·총무 행정 업무 개발·운영"
+  },
+  {
+    "period": "",
+    "title": "충청대·덕성여대·장안대 통합정보시스템",
+    "summary": "Java/Spring/Oracle 기반 학사·부속 시스템 업무 로직 구현·시스템 전환"
+  }
+]

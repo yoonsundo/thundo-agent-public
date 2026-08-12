@@ -1,0 +1,107 @@
+{
+  "schema": "shorts/v1",
+  "enabled": true,
+  "note": "블로그 발행글 1편 → 슬라이드·카드형 9:16 유튜브 쇼츠. 근거: .omc/specs/deep-interview-blog-to-youtube-shorts.md. crosspub 패턴 복제. v1=샘플 1편 검수 후 자동화. 업로드는 채널+OAuth 준비 후 ON.",
+  "site_base_url": "https://www.thundo.kr/blog",
+  "selection": {
+    "lookback_days": 3,
+    "daily_cap": 1,
+    "strategy": "best-fit",
+    "note": "매일 1편 best pick — 최근 lookback_days 발행글 중 아직 쇼츠화 안 된 것 중 쇼츠 적합도 최고 1편(구조/목록/길이 기반 스코어)."
+  },
+  "script": {
+    "min_cards": 3,
+    "max_cards": 4,
+    "narration_syllables_per_card": [
+      35,
+      60
+    ],
+    "total_target_sec": [
+      30,
+      65
+    ],
+    "budget_note": "카드당 35~60음절 × 3~4카드 + 훅 + CTA. 실측 Chirp3-HD 발화속도(~4.5음절/초)로 ≈ 40~65초. gates.max_sec(75)와 정합(리뷰 #4 + 실측 보정)."
+  },
+  "tts": {
+    "provider": "google",
+    "note": "무료 로컬 한국어 자연 TTS는 이 환경(CPU·no-pip·Python3.14)에서 불가 → 딥인터뷰 R(TTS결정) Google Cloud TTS 채택(기존 gsc-sa 서비스계정 재사용). 품질 부족 시 elevenlabs로 provider만 스왑.",
+    "prosody": {
+      "enabled": true,
+      "pause_after_sentence_ms": 260,
+      "pause_after_comma_ms": 130,
+      "note": "AC-3 프로소디 — 평평한 톤 제거. google=문장부호 기반 자연 pause 정규화(+ Chirp3 markup 지원 시 주입, 미지원이면 평문 폴백). edge=SSML prosody/break 완전 지원."
+    },
+    "google": {
+      "key_file": "~/.secrets/gsc-sa.json",
+      "language_code": "ko-KR",
+      "voice": "ko-KR-Chirp3-HD-Erinome",
+      "speaking_rate": 1,
+      "sample_rate": 24000,
+      "encoding": "MP3"
+    },
+    "edge": {
+      "voice": "ko-KR-SunHiNeural",
+      "rate": "+6%",
+      "pitch": "+0Hz",
+      "note": "AC-3 무료 Edge-TTS(Microsoft) 한국어 뉴럴 A/B 후보. pip 없이 Node 글로벌 WebSocket WSS 합성. SSML prosody 완전 지원. provider='edge' 로 스왑 시 활성."
+    },
+    "elevenlabs": {
+      "api_key_env": "ELEVENLABS_API_KEY",
+      "voice_id": "",
+      "model": "eleven_multilingual_v2",
+      "note": "폴백. ELEVENLABS_API_KEY + voice_id 설정 시 provider를 elevenlabs로 바꾸면 활성."
+    }
+  },
+  "imagen": {
+    "enabled": true,
+    "key_file": "~/.secrets/gsc-sa.json",
+    "model": "gemini-2.5-flash-image",
+    "location": "us-central1",
+    "aspect_ratio": "9:16",
+    "note": "카드별 AI 배경 이미지(Vertex AI Gemini 2.5 Flash Image, 기존 서비스계정 재사용). 단조로운 그라데이션 대체. 이 프로젝트에서 Imagen 계열은 Model Garden 게이팅으로 404 → Gemini 이미지생성 사용(실측). 실패/미사용 시 그라데이션 폴백. ⚠ aiplatform.googleapis.com + roles/aiplatform.user 필요."
+  },
+  "motion": {
+    "ken_burns": true,
+    "zoom_per_sec": 0.02,
+    "max_zoom": 1.14,
+    "note": "정지 배경에 켄번스(느린 줌) 모션. 카드 index 짝/홀로 줌인/줌아웃 교차."
+  },
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "speed": 1,
+    "transition": "fade",
+    "transition_sec": 0.4,
+    "pad_head_sec": 0.3,
+    "pad_tail_sec": 0.6,
+    "bgm": {
+      "enabled": false,
+      "file": "assets/shorts/bgm.mp3",
+      "volume": 0.12,
+      "note": "로열티프리 음원을 assets/shorts/bgm.mp3 에 두고 enabled=true. 없으면 무음 배경."
+    }
+  },
+  "gates": {
+    "aspect_w": 1080,
+    "aspect_h": 1920,
+    "min_sec": 15,
+    "max_sec": 75,
+    "max_mb": 100,
+    "require_audio": true,
+    "max_leading_silence_sec": 1.5,
+    "note": "ffprobe 기반 결정론 게이트. exit 0=통과, 1=실패, 2=실행오류."
+  },
+  "upload": {
+    "enabled": false,
+    "privacy_status": "private",
+    "category_id": "28",
+    "made_for_kids": false,
+    "oauth_token_file": "~/.secrets/youtube-oauth.json",
+    "note": "채널 미생성 → v1은 OFF(queue까지만). 채널 생성 + 1회 OAuth(youtube.upload 스코프)로 refresh token 발급 후 enabled=true. 서비스계정으론 개인채널 업로드 불가."
+  },
+  "captions": {
+    "vertical_pct": 50,
+    "vertical_note": "자막 세로 위치(화면 높이 %). 50=중앙. 폰 세로 UI(하단 제목·설명·버튼) 가림 회피용(2026-07-17). 15~85 클램프."
+  }
+}

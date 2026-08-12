@@ -1,0 +1,16 @@
+{
+  "auto_deploy": {
+    "enabled": true,
+    "repo_path": "/home/user/th-team/repo/thundorun",
+    "base_branch": "main",
+    "deploy_url": "https://www.thundo.kr/",
+    "author_name": "yoonsundo",
+    "author_email": "168806235+yoonsundo@users.noreply.github.com",
+    "worktrees_dir": "/home/user/th-team/repo/.orchestrator-worktrees",
+    "killswitch": "state/orchestrator-deploy.killswitch",
+    "migrate_cmd": "node --env-file=.env scripts/db/migrate.mjs",
+    "deploy_timeout_ms": 180000,
+    "dry_run": false,
+    "_notes": "승인 후 완전 자동 반영(dev팀 요청). 승인이 유일한 사람 게이트 — 이후 커밋→푸시→배포 자동. 안전장치: (1)author 를 yoonsundo 로 강제(아니면 Vercel 배포 차단), (2)작업은 origin/main 에서 딴 격리 워크트리에서만(main 직접수정 금지·FF push 만·force 금지), (3)마이그레이션 먼저, (4)배포검증 실패시 revert 롤백. 즉시 중단: `touch state/orchestrator-deploy.killswitch`(커밋까지만·푸시/배포 스킵). 리허설: dry_run=true 또는 ORCH_DEPLOY_DRY_RUN=1(로컬 커밋만, 원격 push·배포·마이그레이션은 로그만)."
+  }
+}

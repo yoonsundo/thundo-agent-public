@@ -1,0 +1,221 @@
+#!/usr/bin/env node
+/**
+ * cardnews-factcheck.test.mjs — Tortoise 🐢 사실 안전망 유닛테스트 (계획 §3.5 · Step 5)
+ *
+ * 증명하는 것:
+ *   ① 프롬프트가 **tortoise BRIEF 로 시작**한다(AC-17) + 가드레일 문구
+ *   ② 🔴 **차단권만** — `verdict!=='ok'` 는 어떤 경로로도 제작으로 넘어가지 않는다.
+ *      미지의 verdict·필드 결손·오타는 전부 `doubtful` 로 떨어진다(통과가 기본값이 아니다)
+ *   ③ US-010 이식 — verdict=ok 인데 note 가 "반드시 수정"을 요구하면 needs_correction 을
+ *      **끌어올려** 보류시킨다. 이게 없으면 "사실이지만 수치가 틀린" 카드가 그대로 나간다
+ *   ④ `applyCorrection` 4가지 적용 불가 사유 + 정상 정정
+ *   ⑤ `resolveFactcheck` 3갈래(hold / 정정 후 제작 / 정정 불가 hold)
+ *   ⑥ hold 사유가 `classifyHeld` 에서 `permanent` 로 분류된다(재시도해도 같은 결과)
+ *      — 그리고 **1-A 집계에서 면제되는 `external` 이 아니다**
+ *   ⑦ `factcheck.enabled=false` 가 무검증 통과가 아니라 차단이다(fail-closed)
+ *
+ * 🔴 실 `claude -p` 미사용.
+ */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const TMP = mkdtempSync(join(tmpdir(), 'cardnews-factcheck-'));
+process.env.STATE_DIR_OVERRIDE = TMP;
+process.env.RUN_MODE = 'mock';
+
+const lib = await import('../cardnews/lib.mjs');
+const fcm = await import('../cardnews/factcheck.mjs');
+
+let passN = 0, failN = 0;
+const ok = (label, cond, extra = '') => {
+  if (cond) { console.log(`  [PASS] ${label}`); passN++; }
+  else { console.log(`  [FAIL] ${label}${extra ? ` — ${extra}` : ''}`); failN++; }
+};
+const eq = (label, got, want) => ok(label, got === want, `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`);
+const section = (s) => console.log(`\n${s}`);
+
+const CFG = lib.loadConfig();
+const GUARD = '우열 비교·일반화·비하 금지, 사실 기술만';
+
+const ITEM = {
+  id: 'a1b2c3d4e5', subject: '일본에서는 밥그릇을 들고 먹는다', country: '일본', domain: '식사예절',
+  common_practice: '밥그릇을 손에 들고 먹는다', contrast: '한국에서는 상에 두고 먹는다',
+  consequence: '상에 두고 먹으면 무례하다는 인상을 준다',
+  trigger_situation: '오사카 이자카야에서 정식을 처음 주문할 때',
+  misconception: '한국처럼 그릇을 두고 먹는 게 예의라고 생각한다',
+  source_hint: '일본 정부 관광국 예절 안내',
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('① 프롬프트 — BRIEF 선두 주입 + 가드레일');
+
+const brief = lib.loadAgentBrief('tortoise');
+ok('tortoise BRIEF 가 비어있지 않다', brief.length > 100, `len=${brief.length}`);
+
+const prompt = fcm.buildPrompt(ITEM);
+ok('프롬프트가 tortoise BRIEF 로 시작한다', prompt.startsWith(brief), `head='${prompt.slice(0, 40)}…'`);
+ok('프롬프트에 가드레일 문구가 실린다', prompt.includes(GUARD));
+ok('4대 확인 항목(실재성·범위·시제·수치)이 명시된다',
+  ['실재성', '범위', '시제', '수치'].every(k => prompt.includes(k)));
+ok('정정 규칙이 구조화 필드를 요구한다', prompt.includes('corrected_subject') && prompt.includes('corrected_contrast'));
+ok('근거 단서가 실린다', prompt.includes(ITEM.source_hint));
+
+// ── 🔴 스테이크 3필드도 검증 대상이다 (2026-07-31) ──────────────────────────
+// 새 필드가 대본까지 흘러가는데 팩트체커가 못 보면, 그건 새로 만든 환각 표면이다.
+// `consequence`(벌금 액수·법 조항·거절되는 절차)는 자극을 키우려 부풀리기 가장 쉬운 자리이고,
+// 부풀린 대가가 그대로 카드 앞면에 실린다. 인스타 발행 API 에는 삭제 엔드포인트가 없다.
+ok('🔴 consequence 가 팩트체커에게 보인다', prompt.includes(ITEM.consequence));
+ok('trigger_situation 이 팩트체커에게 보인다', prompt.includes(ITEM.trigger_situation));
+ok('misconception 이 팩트체커에게 보인다', prompt.includes(ITEM.misconception));
+ok('🔴 수치 확인 항목이 consequence 를 명시적으로 포함한다',
+  prompt.includes('"모르면 벌어지는 일"도 여기 포함된다'));
+ok('지어낸 벌금·법 조항을 지목한다', prompt.includes('벌금 액수·법 조항'));
+
+// 구 재고는 라벨 자체가 빠져야 한다 — 빈 라벨을 보여주면 모델이 그 칸을 채우려 든다.
+const legacyFcPrompt = fcm.buildPrompt({
+  subject: 's', country: '일본', domain: '식사예절', common_practice: 'p', contrast: 'c', source_hint: 'h',
+});
+// ⚠ 확인 항목 ④ 는 라벨 이름을 **상시** 언급하므로, 값 줄(`라벨: 값`)의 부재로 판정한다.
+ok('🔴 구 재고에는 스테이크 값 줄이 나타나지 않는다',
+  !/^모르면 벌어지는 일: /m.test(legacyFcPrompt)
+  && !/^맞닥뜨리는 장면: /m.test(legacyFcPrompt)
+  && !/^한국에서 흔한 오해: /m.test(legacyFcPrompt));
+ok('신규 항목에는 값 줄이 나타난다', /^모르면 벌어지는 일: /m.test(prompt));
+ok('구 재고여도 4대 확인 항목은 그대로', ['실재성', '범위', '시제', '수치'].every(k => legacyFcPrompt.includes(k)));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('② 차단권만 — 통과가 기본값이 아니다');
+
+eq('미지의 verdict → doubtful', fcm.normalizeFactcheck({ verdict: 'probably' }).verdict, 'doubtful');
+eq('verdict 결손 → doubtful', fcm.normalizeFactcheck({}).verdict, 'doubtful');
+eq('null 입력 → doubtful', fcm.normalizeFactcheck(null).verdict, 'doubtful');
+eq('빈 문자열 → doubtful', fcm.normalizeFactcheck({ verdict: '' }).verdict, 'doubtful');
+eq('true 는 ok 가 아니다', fcm.normalizeFactcheck({ verdict: true }).verdict, 'doubtful');
+eq('명시적 ok 만 ok', fcm.normalizeFactcheck({ verdict: 'ok' }).verdict, 'ok');
+eq('false 는 그대로 false', fcm.normalizeFactcheck({ verdict: 'false' }).verdict, 'false');
+
+for (const v of ['doubtful', 'false']) {
+  const res = fcm.resolveFactcheck(ITEM, fcm.normalizeFactcheck({ verdict: v }));
+  eq(`verdict=${v} → hold`, res.action, 'hold');
+  eq(`verdict=${v} 사유 접두`, res.reason, `factcheck:${v}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('③ US-010 — note 가 정정을 요구하면 끌어올린다');
+
+const sneaky = fcm.normalizeFactcheck({
+  verdict: 'ok', needs_correction: false,
+  note: "제목의 '1980년'은 자릿수 오류이니 대본에서 반드시 수정할 것.",
+});
+eq('verdict 는 ok 그대로', sneaky.verdict, 'ok');
+eq('🔴 모델이 needs_correction=false 로 둬도 note 가 그것을 덮어쓴다', sneaky.needs_correction, true);
+eq('구조화 필드가 있었으므로 correction_inferred 는 false', sneaky.correction_inferred, false);
+
+// 구형 응답(구조화 필드 자체가 없음) — 이 경우에만 "추론"으로 표시된다.
+const legacy = fcm.normalizeFactcheck({ verdict: 'ok', note: '연도가 틀렸으니 반드시 수정할 것.' });
+eq('구형 응답도 needs_correction 이 끌어올려진다', legacy.needs_correction, true);
+eq('구형 응답은 추론이었음을 표시한다', legacy.correction_inferred, true);
+eq('구형 응답도 hold 로 떨어진다', fcm.resolveFactcheck(ITEM, legacy).action, 'hold');
+
+eq('정정 문장이 없으므로 resolve 는 hold', fcm.resolveFactcheck(ITEM, sneaky).action, 'hold');
+eq('사유는 correction-unapplicable', fcm.resolveFactcheck(ITEM, sneaky).reason, 'factcheck:correction-unapplicable');
+
+ok('신호어 탐지 — "반드시 수정"', fcm.noteDemandsCorrection('반드시 수정 바람'));
+ok('신호어 탐지 — "사실과 다르다"', fcm.noteDemandsCorrection('세부는 사실과 다르다'));
+ok('신호어 탐지 — 범위 과장', fcm.noteDemandsCorrection('일부 지역에만 해당한다'));
+ok('무해한 note 는 신호 아님', !fcm.noteDemandsCorrection('널리 알려진 관습이며 근거가 충분하다'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('④ applyCorrection');
+
+const noNeed = fcm.applyCorrection(ITEM, { needs_correction: false });
+ok('정정 불필요 → 적용됨·무변경', noNeed.applied && !noNeed.changed);
+
+const missing = fcm.applyCorrection(ITEM, { needs_correction: true, corrected_subject: '', corrected_contrast: '' });
+ok('정정 문장 없음 → 적용 불가', !missing.applied);
+eq('사유 correction_missing', missing.reason, 'correction_missing');
+
+const instruction = fcm.applyCorrection(ITEM, { needs_correction: true, corrected_subject: '수정 필요', corrected_contrast: '수정 필요' });
+ok('지시문이 정정 문장 자리에 오면 적용 불가', !instruction.applied);
+
+const identical = fcm.applyCorrection(ITEM, {
+  needs_correction: true, corrected_subject: ITEM.subject, corrected_contrast: ITEM.contrast,
+});
+ok('원문과 동일한 "정정"은 적용 불가', !identical.applied);
+eq('사유 correction_identical', identical.reason, 'correction_identical');
+
+const subjectUntouched = fcm.applyCorrection(ITEM, {
+  needs_correction: true, note: '제목의 나라 이름이 틀렸다',
+  corrected_subject: ITEM.subject, corrected_contrast: '바뀐 대비 문장',
+});
+ok('note 가 제목 오류를 지목했는데 제목이 그대로면 적용 불가', !subjectUntouched.applied);
+eq('사유 subject_not_corrected', subjectUntouched.reason, 'subject_not_corrected');
+
+const good = fcm.applyCorrection(ITEM, {
+  needs_correction: true, note: '관습은 맞으나 범위가 일부 지역이다',
+  corrected_subject: '일본 일부 지역에서는 밥그릇을 들고 먹는다',
+  corrected_contrast: '한국에서는 상에 두고 먹는 것이 일반적이다',
+});
+ok('정상 정정 → 적용됨·변경됨', good.applied && good.changed);
+eq('정정본이 subject 자리를 대체한다', good.item.subject, '일본 일부 지역에서는 밥그릇을 들고 먹는다');
+eq('정정본이 contrast 자리를 대체한다', good.item.contrast, '한국에서는 상에 두고 먹는 것이 일반적이다');
+eq('원문이 보존된다', good.item.original_subject, ITEM.subject);
+eq('정정 표시가 붙는다', good.item.factcheck_corrected, true);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑤ resolveFactcheck 3갈래');
+
+const okClean = fcm.resolveFactcheck(ITEM, fcm.normalizeFactcheck({ verdict: 'ok', note: '근거 충분', source: '일본 관광국' }));
+eq('① ok + 정정 불필요 → produce', okClean.action, 'produce');
+eq('무변경', okClean.corrected, false);
+
+const okCorrected = fcm.resolveFactcheck(ITEM, fcm.normalizeFactcheck({
+  verdict: 'ok', needs_correction: true, note: '범위가 일부 지역이다',
+  corrected_subject: '일본 일부 지역에서는 밥그릇을 들고 먹는다',
+  corrected_contrast: '한국에서는 상에 두고 먹는 것이 일반적이다',
+}));
+eq('② ok + 정정본 → produce', okCorrected.action, 'produce');
+eq('정정 반영 표시', okCorrected.corrected, true);
+eq('정정본이 하류로 흘러간다', okCorrected.item.subject, '일본 일부 지역에서는 밥그릇을 들고 먹는다');
+
+const okUnapplicable = fcm.resolveFactcheck(ITEM, fcm.normalizeFactcheck({
+  verdict: 'ok', needs_correction: true, note: '연도가 틀렸으니 반드시 수정',
+}));
+eq('③ ok + 정정 불가 → hold', okUnapplicable.action, 'hold');
+ok('사유에 진단이 실린다', okUnapplicable.note.includes('correction_missing'), okUnapplicable.note);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑥ hold 사유 분류 — permanent 이지 external 이 아니다');
+
+for (const reason of ['factcheck:doubtful', 'factcheck:false', 'factcheck:correction-unapplicable']) {
+  eq(`classifyHeld('${reason}') = permanent`, lib.classifyHeld(reason), 'permanent');
+  ok(`'${reason}' 은 1-A 면제(external)가 아니다`, lib.classifyHeld(reason) !== 'external');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑦ factCheck() — 스텁 경로 · fail-closed');
+
+lib.resetClaudeCalls();
+let seenPrompt = null;
+const stub = (p) => { seenPrompt = p; return JSON.stringify({ verdict: 'ok', note: '근거 충분', source: '일본 정부 관광국' }); };
+const fc = fcm.factCheck(ITEM, { cfg: CFG, deps: { callClaude: stub } });
+eq('스텁 응답이 정규화되어 나온다', fc.verdict, 'ok');
+eq('🔴 source 가 보존된다(테이크다운 런북 입력)', fc.source, '일본 정부 관광국');
+eq('note 가 보존된다', fc.note, '근거 충분');
+ok('스텁이 받은 프롬프트도 BRIEF 로 시작한다', seenPrompt.startsWith(brief));
+eq('호출 1회 계상', lib.claudeCallCount(), 0);   // 스텁은 lib.callClaude 를 타지 않는다
+
+const disabled = fcm.factCheck(ITEM, { cfg: { ...CFG, factcheck: { enabled: false } }, deps: { callClaude: stub } });
+eq('🔴 factcheck.enabled=false 는 무검증 통과가 아니라 doubtful(fail-closed)', disabled.verdict, 'doubtful');
+eq('그 판정은 hold 로 이어진다', fcm.resolveFactcheck(ITEM, disabled).action, 'hold');
+
+let threw = null;
+try { fcm.factCheck(ITEM, { cfg: CFG, deps: { callClaude: () => { throw new Error('claude 실행 실패(network)'); } } }); }
+catch (e) { threw = e; }
+ok('🔴 호출 실패는 throw 한다(안 돌았는데 통과시키지 않는다)', threw !== null, threw?.message);
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${failN === 0 ? 'PASS' : 'FAIL'} — ${passN} passed, ${failN} failed`);
+rmSync(TMP, { recursive: true, force: true });
+process.exit(failN === 0 ? 0 : 1);

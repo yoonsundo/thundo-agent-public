@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "discontinued": "2026-07-02 사용자 결정 — 네이버 교차발행 중단 (반자동도 운영 안 함, 스크립트는 휴면 보존)",
+  "similarity_band": {
+    "min": 0.3,
+    "max": 0.6
+  },
+  "site_base_url": "https://www.thundo.kr/blog",
+  "note": "첫 3편 실측 후 캘리브레이션 예정"
+}

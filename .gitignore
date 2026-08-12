@@ -1,0 +1,26 @@
+# 공개 미러 레포용 .gitignore.
+# 미러는 스크립트가 파일을 통째로 교체하는 구조라 여기 걸릴 일이 거의 없다 —
+# 사람이 이 레포를 클론해 만져 볼 때를 위한 안전망이다.
+
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# 크리덴셜 — 미러에는 애초에 나가지 않지만, 클론한 쪽에서 실수로 만드는 것을 막는다.
+.env
+.env*
+!.env.example
+*.pem
+*.p12
+*.key
+*service-account*.json
+*-sa.json
+**/session-state.json
+
+.DS_Store
+*.swp
+*~

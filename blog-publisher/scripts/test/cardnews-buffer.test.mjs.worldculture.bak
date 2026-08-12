@@ -1,0 +1,401 @@
+#!/usr/bin/env node
+/**
+ * cardnews-buffer.test.mjs — Flamingo 🦩 대본 + 예비 대본 buffer (계획 §3.6 · Step 5)
+ *
+ * 증명하는 것:
+ *   ① 프롬프트가 **flamingo BRIEF 로 시작**한다(AC-17) + 가드레일 문구
+ *   ② 스키마가 **7장을 보장**한다 — cover(1)+cards(5)+outro(1). 렌더에서 세는 것이 아니라
+ *      여기서 막는다(AC-4)
+ *   ③ 글자수 위반 시 **위반 목록을 힌트로 붙여** 재생성하고, 3회를 다 쓰면 throw 한다.
+ *      맹목 재시도는 같은 상한에 또 붙는다
+ *   ④ 🔴 **provenance 영속화** — `scripted` 전이에 `source_hint`·`factcheck_source`·
+ *      `factcheck_note` 가 남는다. 이게 없으면 테이크다운 런북이 운영자에게 "발행된
+ *      게시물"만 쥐여주고 왜 믿었는지는 어디에도 없다
+ *   ⑤ 🔴 buffer 적립 **자격** — 팩트체크 ok + TIER-1 게이트 통과분만. 검증 안 된 대본을
+ *      쌓으면 하필 사람이 못 보는 장애일에 그것이 나간다(버퍼가 우회로가 된다)
+ *   ⑥ refill-to-target — 부족분을 `max_topup_per_run`(2)까지만. 목표 5 를 채우면 멈춘다
+ *   ⑦ 🔴 top-up 은 **발행 후** 경로라 예산 throw 에서 면제되지만 **계상은 한다**(F4).
+ *      그리고 top-up 생성 실패가 런을 죽이지 않는다(발행은 이미 끝났다)
+ *
+ * 🔴 실 `claude -p` 미사용 — 전부 스텁.
+ */
+import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const TMP = mkdtempSync(join(tmpdir(), 'cardnews-buffer-'));
+process.env.STATE_DIR_OVERRIDE = TMP;
+process.env.RUN_MODE = 'mock';
+
+const lib = await import('../cardnews/lib.mjs');
+const sc = await import('../cardnews/script.mjs');
+const gg = await import('../cardnews/gate-generalization.mjs');
+
+let passN = 0, failN = 0;
+const ok = (label, cond, extra = '') => {
+  if (cond) { console.log(`  [PASS] ${label}`); passN++; }
+  else { console.log(`  [FAIL] ${label}${extra ? ` — ${extra}` : ''}`); failN++; }
+};
+const eq = (label, got, want) => ok(label, got === want, `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`);
+const section = (s) => console.log(`\n${s}`);
+
+const CFG = lib.loadConfig();
+const GUARD = '우열 비교·일반화·비하 금지, 사실 기술만';
+
+const ITEM = {
+  id: 'a1b2c3d4e5', subject: '일본에서는 밥그릇을 들고 먹는다', country: '일본', domain: '식사예절',
+  common_practice: '밥그릇을 손에 들고 먹는다', contrast: '한국에서는 상에 두고 먹는다',
+  consequence: '상에 두고 먹으면 무례하다는 인상을 준다',
+  trigger_situation: '오사카 이자카야에서 정식을 처음 주문할 때',
+  misconception: '한국처럼 그릇을 두고 먹는 게 예의라고 생각한다',
+  source_hint: '일본 정부 관광국 예절 안내',
+};
+const FC = { verdict: 'ok', note: '널리 기록된 관습', source: '일본 정부 관광국 예절 안내 페이지' };
+
+const goodScript = (over = {}) => ({
+  cover: { headline: '일본의 밥그릇 예절', sub: '들고 먹는 게 기본', country: '일본', flag_emoji: '🇯🇵' },
+  cards: [1, 2, 3, 4, 5].map(i => ({ index: i, headline: `카드 ${i} 제목`, body: `카드 ${i} 본문입니다. 관습을 사실 그대로 기술합니다.` })),
+  outro: { headline: '저장해두세요', body: '다음엔 다른 나라 식사 예절을 다룹니다.' },
+  caption_sections: { hook: '밥그릇, 들까 말까?', body: '일본에서는 손에 들고 먹는 것이 예의다.', cta: '저장해두세요.' },
+  hashtags: ['#세계문화', '#일본'],
+  ...over,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('① 프롬프트 — BRIEF 선두 주입 + 가드레일');
+
+const brief = lib.loadAgentBrief('flamingo');
+ok('flamingo BRIEF 가 비어있지 않다', brief.length > 100, `len=${brief.length}`);
+const prompt = sc.buildScriptPrompt(ITEM, CFG);
+ok('프롬프트가 flamingo BRIEF 로 시작한다', prompt.startsWith(brief), `head='${prompt.slice(0, 40)}…'`);
+ok('프롬프트에 가드레일 문구가 실린다', prompt.includes(GUARD));
+ok('7장 구조가 고정으로 명시된다', prompt.includes('= 정확히 7장'));
+ok('글자수 상한이 config 에서 온다', prompt.includes(`${CFG.cards.headline_max_chars}자 이내`));
+ok('근거가 실린다', prompt.includes(ITEM.source_hint));
+ok('힌트가 있으면 프롬프트에 실린다', sc.buildScriptPrompt(ITEM, CFG, '⚠ 직전 시도 위반').includes('⚠ 직전 시도 위반'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('①-b 🔴 카드 역할 — "카드가 다 비슷하다"의 직접 원인을 제거했는가 (2026-07-31)');
+//
+// 옛 지시는 "본문 5장은 한 장에 새 정보 하나. 앞 장을 다른 말로 되풀이하지 마라"였다.
+// 그 문장은 **병렬 나열을 명령한다** — 병렬 나열에서 모든 카드는 자기완결적이고,
+// 자기완결적이면 7번째 카드로 넘길 이유가 없다. 캐러셀 배포는 스와이프 완주율에 걸려 있다.
+
+ok('🔴 병렬 나열 지시가 제거됐다', !prompt.includes('한 장에 새 정보 하나'));
+ok('자기완결 병렬 나열을 명시적으로 금지한다', prompt.includes('병렬 나열은 쓰지 마라'));
+ok('1~2번 카드는 자극', /\*\*1~2번 카드.*= 자극\.\*\*/.test(prompt));
+ok('가운데 카드는 유용', /본문 가운데\) = 유용\.\*\*/.test(prompt));
+ok('마지막 본문은 반전 또는 이유', /마지막 본문\) = 반전 또는 이유\.\*\*/.test(prompt));
+ok('마무리는 지목 + 저장 CTA', /마무리\) = 지목 \+ 저장 CTA\.\*\*/.test(prompt));
+ok('🔴 자극 카드가 답을 미룬다(루프를 연다)', prompt.includes('답을 아직 주지 마라'));
+ok('🔴 원인은 역사·법·기후·제도로 한정된다(국민성 금지 + 실제로 더 재미있다)',
+  prompt.includes('원인은 반드시 역사·법·기후·제도'));
+ok('🔴 지목의 근거(1:1 DM 전달)가 프롬프트에 있다', prompt.includes('1:1 DM 전달'));
+
+// 🔴 저장 — 시스템은 savability 로 소재를 고르면서 작가에겐 저장하게 쓰라고 말한 적이 없었다.
+ok('🔴 "저장"이 프롬프트에 실재한다', prompt.includes('저장'));
+ok('저장 이유 3종이 명시된다', prompt.includes('저장하는 이유는 셋뿐'));
+ok('캡션 cta 에도 저장을 요구한다', prompt.includes('캡션 cta 에도 **저장**'));
+
+// 스테이크 3필드가 대본 작가에게 전달되는가 — 없으면 자극 카드에 쓸 재료가 없다.
+ok('consequence 가 전달된다', prompt.includes(ITEM.consequence));
+ok('trigger_situation 이 전달된다', prompt.includes(ITEM.trigger_situation));
+ok('misconception 이 전달된다', prompt.includes(ITEM.misconception));
+// 🔴 구 재고는 라벨 자체가 빠져야 한다 — 빈 라벨을 보여주면 모델이 그 칸을 채우려 든다.
+const legacyPrompt = sc.buildScriptPrompt(
+  { subject: 's', country: '일본', domain: '식사예절', common_practice: 'p', contrast: 'c' }, CFG);
+ok('🔴 구 재고에는 스테이크 라벨이 아예 나타나지 않는다',
+  !legacyPrompt.includes('모르면 벌어지는 일') && !legacyPrompt.includes('한국에서 흔한 오해'));
+ok('구 재고여도 프롬프트는 정상 생성된다', legacyPrompt.includes('= 정확히 7장'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('①-c 🔴 문형 규칙 — 실측 게이트에 맞춘 것인가');
+//
+// `gate-generalization.mjs --line` 실측: 장소를 주어로 한 단정적 문장은 전부 PASS.
+// 즉 헤징은 필요 없고, 필요한 것은 주어를 장소로 잡는 것뿐이다.
+
+ok('문형 대조표가 실린다', prompt.includes('| 써도 되는 문형 | 쓰면 안 되는 문형 |'));
+for (const good of [
+  '일본에서는 국수 먹는 소리를 무례로 보지 않는다.',
+  '미국 식당에서는 팁이 관행으로 작동한다.',
+  '독일에서는 약속 시간 지각이 바로 비매너로 읽힌다.',
+]) ok(`허용 문형이 표에 실린다: ${good.slice(0, 14)}…`, prompt.includes(good));
+for (const bad of [
+  '일본 사람들은 다 국수 먹을 때 소리를 낸다.',
+  '미국인들은 팁을 당연하게 여긴다.',
+  '독일 사람들은 다 시간에 엄격하다.',
+]) ok(`금지 문형이 표에 실린다: ${bad.slice(0, 14)}…`, prompt.includes(bad));
+ok('템플릿 문형도 실린다', prompt.includes('[장소]에서는 [행동]이 예의가 아니다.')
+  && prompt.includes('[국가] 사람들은 원래 [성향]이다.'));
+ok('🔴 "약하게 쓰라는 뜻이 아니다"가 명시된다(헤징 유도 방지)',
+  prompt.includes('**약하게 쓰라는 뜻이 아니다**'));
+
+// 후퇴성 헤징 — 모든 게이트를 통과하면서 읽는 경험만 죽인다. 게이트가 못 잡으니 여기서 막는다.
+for (const h of ['문화마다 다르다', '상황에 따라 다르다', '정답은 없다', '참고하면 좋다']) {
+  ok(`후퇴 표현 금지: ${h}`, prompt.includes(`"${h}"`));
+}
+ok('후퇴 대신 정확히 좁히라고 한다', prompt.includes('**정확히** 좁혀라'));
+
+// 표지 문구 5패턴 — 전부 게이트 PASS·24자 이내로 실측 확인된 것.
+const COVERS = [
+  '일본에선 조용히 먹는 게 더 어색하다',
+  '일본에선 전철 통화가 오히려 민폐다',
+  '미국 식당 가기 전 팁 계산부터 익혀야 한다',
+  '한국에선 선택이지만 미국에선 기본값이다',
+  '일본에서 바로 티 나는 실수 3개',
+];
+ok('표지 패턴 5종이 프롬프트에 있다', COVERS.every(c => prompt.includes(c.slice(0, 12))));
+for (const c of COVERS) {
+  ok(`표지 예시가 headline 상한 이내: ${c}`, c.length <= CFG.cards.headline_max_chars,
+    `${c.length}자 > ${CFG.cards.headline_max_chars}자`);
+  const v = gg.runGate({ cover: { headline: c }, cards: [], caption_sections: {} }, { cfg: CFG, appendQueue: false });
+  ok(`🔴 표지 예시가 실제 게이트를 통과한다: ${c}`, v.pass, v.reason);
+}
+// 표의 왼쪽(허용)/오른쪽(금지)을 실제 게이트에 물려 본다 — 표가 게이트와 어긋나면
+// 프롬프트를 따른 대본이 그날 발행을 날린다.
+const line = (t) => gg.runGateOnLine(t, { cfg: CFG }).pass;
+for (const good of [
+  '일본에서는 국수 먹는 소리를 무례로 보지 않는다.',
+  '미국 식당에서는 팁이 관행으로 작동한다.',
+  '독일에서는 약속 시간 지각이 바로 비매너로 읽힌다.',
+]) ok(`🔴 허용 문형은 게이트 PASS(헤징 없이도): ${good.slice(0, 14)}…`, line(good));
+ok('🔴 전칭 일반화는 게이트가 차단한다', !line('일본 사람들은 다 국수 먹을 때 소리를 낸다.'));
+ok('🔴 전칭 일반화(독일)도 차단', !line('독일 사람들은 다 시간에 엄격하다.'));
+// 🔴 이 공백은 2026-07-31 에 막혔다(규칙 G6 신설).
+//   발견: G1·W1 이 전칭 부사(다·원래·항상…)를 요구해서, 부사만 빼면 "중국인들은 목소리가 크다",
+//   "독일 사람들은 시간에 엄격하다" 같은 전형적 고정관념이 그대로 통과했다. 삭제 불가능한 공개
+//   계정에 나가는 걸 막으려던 게이트인데 정작 그 형태엔 기계적 방어가 없고 프롬프트만 남아 있었다.
+//   G6 은 부사를 요구하지 않고 **사람 주어 형태 자체**를 막는다. 이 채널의 문체 규칙이
+//   "○○에서는"만 허용하고 "○○ 사람들은"을 금지하므로 오탐이 아니라 교정 신호다.
+for (const bad of [
+  '미국인들은 팁을 당연하게 여긴다.',
+  '중국인들은 목소리가 크다.',
+  '독일 사람들은 시간에 엄격하다.',
+  '일본인은 조용하다.',
+]) ok(`🔴 부사 없는 사람 주어 일반화도 차단(G6): ${bad.slice(0, 14)}…`, !line(bad));
+ok('그래도 그 문형은 프롬프트 금지표에 남아 있다(게이트는 최후방어, 프롬프트가 1차)',
+  prompt.includes('미국인들은 팁을 당연하게 여긴다.'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('①-d 🔴 본문 장수 — config 가 진실이다(죽은 값 제거)');
+//
+// 이전엔 `BODY_CARDS = 5` 코드 상수가 검증과 프롬프트를 지배해서 `cards.count` 는
+// 아무것도 하지 않는 죽은 값이었다 — 고친 사람은 아무 변화도 얻지 못했다.
+
+eq('기본값은 그대로 5(오늘 동작은 변하지 않는다)', sc.bodyCardCount(CFG), 5);
+eq('config 가 없으면 폴백 5', sc.bodyCardCount({}), sc.BODY_CARDS);
+eq('body_count=3 을 읽는다', sc.bodyCardCount({ cards: { body_count: 3 } }), 3);
+eq('body_count=7 을 읽는다', sc.bodyCardCount({ cards: { body_count: 7 } }), 7);
+eq('범위 아래는 클램프(설정 오타로 발행을 날리지 않는다)', sc.bodyCardCount({ cards: { body_count: 1 } }), sc.BODY_CARDS_MIN);
+eq('범위 위도 클램프', sc.bodyCardCount({ cards: { body_count: 99 } }), sc.BODY_CARDS_MAX);
+eq('정수가 아니면 폴백', sc.bodyCardCount({ cards: { body_count: 'abc' } }), sc.BODY_CARDS);
+
+const CFG3 = { ...CFG, cards: { ...CFG.cards, body_count: 3 } };
+const s3 = goodScript({ cards: [1, 2, 3].map(i => ({ index: i, headline: `제목 ${i}`, body: `본문 ${i}` })) });
+eq('🔴 body_count=3 이면 본문 3장이 통과한다(검증이 config 를 읽는다)', sc.validateScript(s3, CFG3).ok, true);
+eq('body_count=3 이면 5장은 실패한다', sc.validateScript(goodScript(), CFG3).ok, false);
+ok('프롬프트도 config 장수를 따른다',
+  sc.buildScriptPrompt(ITEM, CFG3).includes('본문 3장') && sc.buildScriptPrompt(ITEM, CFG3).includes('= 정확히 5장'));
+ok('🔴 역할표도 장수에 따라 재배치된다(3장이면 4번이 반전, 5번이 마무리)',
+  sc.cardRoles(3).includes('4번 카드(마지막 본문)') && sc.cardRoles(3).includes('5번 카드(마무리)'));
+ok('기본 5장이면 6번=반전, 7번=마무리', sc.cardRoles(5).includes('6번 카드(마지막 본문)')
+  && sc.cardRoles(5).includes('7번 카드(마무리)'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('② 스키마가 7장을 보장한다');
+
+eq('cover+cards5+outro = 7', sc.cardCount(goodScript()), 7);
+eq('정상 대본은 검증 통과', sc.validateScript(goodScript(), CFG).ok, true);
+
+const four = goodScript({ cards: [1, 2, 3, 4].map(i => ({ index: i, headline: `제목 ${i}`, body: `본문 ${i}` })) });
+eq('본문 4장이면 실패', sc.validateScript(four, CFG).ok, false);
+ok('사유에 장수가 드러난다', sc.validateScript(four, CFG).violations.some(v => /cards 4장/.test(v)),
+  JSON.stringify(sc.validateScript(four, CFG).violations));
+eq('본문 6장도 실패', sc.validateScript(goodScript({ cards: [1, 2, 3, 4, 5, 6].map(i => ({ index: i, headline: `제목 ${i}`, body: `본문 ${i}` })) }), CFG).ok, false);
+eq('cover 없으면 실패', sc.validateScript(goodScript({ cover: null }), CFG).ok, false);
+eq('outro 없으면 실패', sc.validateScript(goodScript({ outro: null }), CFG).ok, false);
+eq('caption_sections 결손이면 실패', sc.validateScript(goodScript({ caption_sections: { hook: 'a', body: 'b' } }), CFG).ok, false);
+eq('hashtags 없으면 실패', sc.validateScript(goodScript({ hashtags: [] }), CFG).ok, false);
+eq('객체가 아니면 실패', sc.validateScript('문자열', CFG).ok, false);
+
+const longH = goodScript();
+longH.cards[2].headline = '가'.repeat(CFG.cards.headline_max_chars + 1);
+eq('헤드라인 상한 초과 실패', sc.validateScript(longH, CFG).ok, false);
+const longB = goodScript();
+longB.cards[0].body = '나'.repeat(CFG.cards.body_max_chars + 1);
+eq('본문 상한 초과 실패', sc.validateScript(longB, CFG).ok, false);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('③ 재생성 — 위반을 힌트로 붙인다 · 3회 소진 시 throw');
+
+const hints = [];
+let n = 0;
+const r = sc.resolveScript({
+  cfg: CFG, attempts: 3,
+  generate: (hint) => { hints.push(hint); return ++n < 3 ? longH : goodScript(); },
+});
+eq('3번째 시도에서 통과', r.attempts_used, 3);
+eq('첫 시도는 힌트 없음', hints[0], '');
+ok('두 번째 시도에 위반 목록이 힌트로 붙는다', hints[1].includes('직전 시도는 다음을 어겼다') && hints[1].includes('headline'),
+  hints[1]?.slice(0, 80));
+eq('힌트가 매번 갱신된다', hints.length, 3);
+
+let threw = null;
+try { sc.resolveScript({ cfg: CFG, attempts: 3, generate: () => longH }); } catch (e) { threw = e; }
+ok('3회 모두 실패하면 throw', threw !== null && /3회 시도/.test(threw.message), threw?.message);
+ok('위반 목록이 err 에 실린다', Array.isArray(threw?.violations) && threw.violations.length > 0);
+
+let budgetThrew = null;
+try {
+  sc.resolveScript({ cfg: CFG, attempts: 3, generate: () => { const e = new Error('budget'); e.budget = { calls: 10, cap: 9 }; throw e; } });
+} catch (e) { budgetThrew = e; }
+ok('예산 초과는 재시도하지 않고 즉시 전파', Boolean(budgetThrew?.budget));
+
+// generateScript — 스텁 경로 + work/{post_id}/script.json 저장.
+const POST_ID = lib.postIdFor(ITEM.id, new Date('2026-08-01T02:00:00Z'));
+const gen = sc.generateScript(ITEM, { cfg: CFG, postId: POST_ID, deps: { callClaude: () => JSON.stringify(goodScript()) } });
+eq('대본에 post_id 가 박힌다', gen.script.post_id, POST_ID);
+ok('script.json 이 work/{post_id} 에 저장된다', existsSync(join(lib.workDir(POST_ID), 'script.json')), lib.workDir(POST_ID));
+eq('총 7장', sc.cardCount(gen.script), 7);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('④ 🔴 provenance 영속화 — scripted 전이');
+
+lib.transition(POST_ID, 'planned', { backlog_id: ITEM.id });
+const post = sc.persistScripted(POST_ID, { item: ITEM, script: gen.script, factcheck: FC });
+eq('상태가 scripted', post.status, 'scripted');
+ok('provenance 객체가 생겼다', post.provenance && typeof post.provenance === 'object');
+eq('🔴 source_hint 영속화', post.provenance.source_hint, ITEM.source_hint);
+eq('🔴 factcheck_source 영속화', post.provenance.factcheck_source, FC.source);
+eq('🔴 factcheck_note 영속화', post.provenance.factcheck_note, FC.note);
+eq('factcheck_verdict 영속화', post.provenance.factcheck_verdict, 'ok');
+eq('정정 여부 영속화', post.provenance.factcheck_corrected, false);
+eq('소재 메타도 함께', post.subject, ITEM.subject);
+eq('나라', post.country, '일본');
+eq('도메인', post.domain, '식사예절');
+eq('backlog_id 가 남아 pick 이 재선정하지 않는다', post.backlog_id, ITEM.id);
+// 🔴 회전축. freshnessMap 이 인덱스에서 이 값을 읽는다 — 없으면 백로그 역참조로만 복원되고,
+//    백로그가 정리되는 날 회전이 조용히 멈춘다.
+eq('🔴 trigger_situation 영속화(회전축이 인덱스에 남는다)', post.trigger_situation, ITEM.trigger_situation);
+eq('디스크 재로드 후에도 회전축 유지', lib.getPost(POST_ID).trigger_situation, ITEM.trigger_situation);
+
+// 디스크에서 되읽어도 남아 있는가(메모리 객체가 아니라 영속화인지).
+const reread = lib.getPost(POST_ID);
+eq('디스크 재로드 후에도 factcheck_source 유지', reread.provenance.factcheck_source, FC.source);
+ok('history 에 전이가 기록된다', reread.history.some(h => h.to === 'scripted'));
+
+// 정정된 소재는 그 사실도 남는다.
+const POST2 = lib.postIdFor('bbbbbbbbbb', new Date('2026-08-02T02:00:00Z'));
+lib.transition(POST2, 'planned', { backlog_id: 'bbbbbbbbbb' });
+const corrected = sc.persistScripted(POST2, {
+  item: { ...ITEM, id: 'bbbbbbbbbb', factcheck_corrected: true },
+  script: gen.script, factcheck: { ...FC, needs_correction: true },
+});
+eq('정정 반영본은 factcheck_corrected=true', corrected.provenance.factcheck_corrected, true);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑤ 🔴 buffer 적립 자격 — 팩트체크 ok + TIER-1 통과분만');
+
+const bank = (over = {}) => sc.bankToBuffer({
+  backlogId: 'aaaaaaaaaa', script: goodScript(), provenance: { source_hint: 'x' },
+  factcheckVerdict: 'ok', gatePass: true, ...over,
+});
+
+eq('자격 충족 → 적립', bank().banked, true);
+eq('버퍼 1건', sc.bufferCount(), 1);
+
+for (const v of ['doubtful', 'false', undefined]) {
+  const r2 = bank({ backlogId: 'zzz', factcheckVerdict: v });
+  eq(`🔴 factcheck=${v} → 적립 거부`, r2.banked, false);
+  ok(`사유가 factcheck`, r2.reason.startsWith('factcheck:'), r2.reason);
+}
+const gateFail = bank({ backlogId: 'zzz', gatePass: false });
+eq('🔴 TIER-1 게이트 미통과 → 적립 거부', gateFail.banked, false);
+eq('사유가 gate:generalization', gateFail.reason, 'gate:generalization');
+eq('gatePass 미지정(undefined)도 거부', bank({ backlogId: 'zzz', gatePass: undefined }).banked, false);
+eq('입력 결손도 거부', bank({ backlogId: null }).banked, false);
+eq('거부된 건은 버퍼에 남지 않는다', sc.bufferCount(), 1);
+
+// 실제 게이트 판정을 물려도 같은 결과인가(적립물이 게이트를 통과한 것만 담기는지).
+const dirty = goodScript({ caption_sections: { hook: 'a', body: '일본 사람들은 다 그렇다.', cta: 'b' } });
+const verdict = gg.runGate(dirty, { cfg: CFG, appendQueue: false });
+eq('일반화 대본은 게이트가 막는다', verdict.pass, false);
+eq('그 판정을 물리면 적립 거부', sc.bankToBuffer({ backlogId: 'dirty1', script: dirty, factcheckVerdict: 'ok', gatePass: verdict.pass }).banked, false);
+
+// 적립물 내용 확인.
+const banked = sc.loadBuffer()[0];
+ok('backlog_id 저장', banked.backlog_id === 'aaaaaaaaaa');
+ok('script 저장', sc.cardCount(banked.script) === 7);
+ok('provenance 저장', banked.provenance?.source_hint === 'x');
+ok('tier2_warnings 저장(빈 배열)', Array.isArray(banked.tier2_warnings));
+ok('banked_at 타임스탬프', typeof banked.banked_at === 'string' && banked.banked_at.includes('T'));
+
+// 소비 = FIFO + 파일 제거.
+sc.bankToBuffer({ backlogId: 'cccccccccc', script: goodScript(), factcheckVerdict: 'ok', gatePass: true, now: new Date(Date.now() + 60_000) });
+eq('버퍼 2건', sc.bufferCount(), 2);
+eq('가장 오래된 것부터 소비(FIFO)', sc.takeFromBuffer().backlog_id, 'aaaaaaaaaa');
+eq('소비 후 1건', sc.bufferCount(), 1);
+sc.takeFromBuffer();
+eq('빈 버퍼에서 꺼내면 null', sc.takeFromBuffer(), null);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑥ refill-to-target — 목표 5 · 런당 2');
+
+eq('버퍼 비어있음', sc.bufferCount(), 0);
+let made = 0;
+const producer = () => ({
+  backlogId: `gen${++made}`, script: goodScript(), provenance: { source_hint: 's' },
+  tier2Warnings: [], factcheckVerdict: 'ok', gatePass: true,
+});
+
+const t1 = sc.topUpBuffer({ cfg: CFG, produce: producer });
+eq('🔴 런당 상한 2건만 채운다(목표 5 인데도)', t1.after, 2);
+eq('before 기록', t1.before, 0);
+eq('target 기록', t1.target, CFG.buffer.target);
+eq('적립 목록', t1.banked.length, 2);
+
+sc.topUpBuffer({ cfg: CFG, produce: producer });
+const t3 = sc.topUpBuffer({ cfg: CFG, produce: producer });
+eq('세 번째 런에서 목표 5 도달', t3.after, 5);
+eq('마지막 런은 부족분 1건만 채운다', t3.banked.length, 1);
+
+const t4 = sc.topUpBuffer({ cfg: CFG, produce: producer });
+eq('🔴 목표를 채우면 더 만들지 않는다(생성 0회)', t4.banked.length, 0);
+eq('버퍼 유지', t4.after, 5);
+
+// 자격 미달 생산물은 적립되지 않지만 런은 계속된다.
+while (sc.takeFromBuffer());
+const t5 = sc.topUpBuffer({ cfg: CFG, produce: () => ({ ...producer(), factcheckVerdict: 'doubtful' }) });
+eq('자격 미달은 적립 0', t5.banked.length, 0);
+eq('자격 미달 사유가 집계된다', t5.skipped.length, 2);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑦ 🔴 top-up 은 throw 면제 · 계상은 한다 · 실패가 런을 죽이지 않는다');
+
+while (sc.takeFromBuffer());
+const t6 = sc.topUpBuffer({ cfg: CFG, produce: () => { throw new Error('claude 실행 실패(network)'); } });
+ok('생성이 죽어도 topUpBuffer 는 throw 하지 않는다(발행은 이미 끝났다)', t6.after === 0);
+eq('적립 0', t6.banked.length, 0);
+
+// 예산: exempt 는 throw 를 면제하되 계상은 유지한다(F4 과소보고 방지).
+lib.resetClaudeCalls();
+const fakeOk = () => JSON.stringify({ subtype: 'success', is_error: false, result: '{}' });
+for (let i = 0; i < 3; i++) lib.callClaude('x', { exec: fakeOk, budgetMax: 3 });
+eq('상한까지 3회', lib.claudeCallCount(), 3);
+
+let overThrew = null;
+try { lib.callClaude('x', { exec: fakeOk, budgetMax: 3 }); } catch (e) { overThrew = e; }
+ok('상한 초과 호출은 throw', Boolean(overThrew?.budget), overThrew?.message);
+eq('throw 해도 계상은 됐다', lib.claudeCallCount(), 4);
+
+lib.resetClaudeCalls();
+for (let i = 0; i < 3; i++) lib.callClaude('x', { exec: fakeOk, budgetMax: 3 });
+let exemptThrew = null;
+try { lib.callClaude('x', { exec: fakeOk, budgetMax: 3, exempt: true }); } catch (e) { exemptThrew = e; }
+ok('🔴 exempt(top-up) 는 상한을 넘겨도 throw 하지 않는다', exemptThrew === null, exemptThrew?.message);
+eq('🔴 그래도 계상은 한다(공유 원장 과소보고 방지)', lib.claudeCallCount(), 4);
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${failN === 0 ? 'PASS' : 'FAIL'} — ${passN} passed, ${failN} failed`);
+rmSync(TMP, { recursive: true, force: true });
+process.exit(failN === 0 ? 0 : 1);

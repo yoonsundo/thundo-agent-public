@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+/**
+ * cardnews/backlog.mjs — Camel 🐫 소재 백로그 보충 (계획 §3.3, AC-2)
+ *
+ * 사용: node scripts/cardnews/backlog.mjs [--n 10]
+ * 계약: stdout JSON `{ok, added, total}`. exit 0 / 2=오류
+ *
+ * 구독 claude 로 "나라별 문화 차이" 후보를 **경량 메타**로 생성해 백로그에 append 한다.
+ * 풀 대본·이미지는 만들지 않는다 — 하루에 1건만 제작되므로 40건을 미리 만드는 건 순수 낭비다.
+ *
+ * 🔴 프롬프트 선두에 camel 의 BRIEF(페르소나)를 주입한다(AC-17). 그 안에 가드레일 문구
+ * "우열 비교·일반화·비하 금지, 사실 기술만" 이 문자열로 실재하며, 그것이 공개 브랜드 계정을
+ * 지키는 세 겹 중 **가장 싼 한 겹**이다(나머지 둘은 tortoise 팩트체크와 일반화 게이트).
+ * 여기서 막으면 토큰 한 푼 더 쓰지 않고 막는 것이고, 뒤에서 막으면 그날 발행이 날아간다.
+ *
+ * v1.1 미구현: 성과 인사이트 폐루프(`shorts-curiosity/backlog.mjs:102-188`)는 복제하지 않는다
+ * — 인스타 인사이트 수집 자체가 아직 없어 주입할 학습 신호가 존재하지 않는다.
+ */
+import { createHash } from 'node:crypto';
+import { makeLogger } from '../lib/log.mjs';
+import {
+  loadConfig, loadBacklog, appendBacklog, callClaude, extractJson, isMainModule, withBrief,
+} from './lib.mjs';
+import '../lib/force-subscription.mjs';
+
+const log = makeLogger('cardnews/backlog');
+
+/** 백로그 id — subject sha1 10자(`shorts-curiosity/backlog.mjs:21` 그대로). post_id 의 꼬리가 된다. */
+export const idOf = (subject) => createHash('sha1').update(String(subject).trim()).digest('hex').slice(0, 10);
+
+/**
+ * 필수 문자열 필드 — 하나라도 비면 그 항목은 버린다(빈 소재가 백로그를 오염시키지 않게).
+ *
+ * 🔴 `consequence`·`trigger_situation`·`misconception` 이 여기 있는 이유(2026-07-31):
+ * 이 채널의 진단은 "저장할 이유가 없다"였고, 저장은 ①나중에 쓸 것 ②대화 소재
+ * ③실수 회피 체크리스트에서 나온다. 옛 스키마
+ * `{subject,country,domain,common_practice,contrast,source_hint}` 에는 **모르면 무슨 일이
+ * 나는지**를 담는 자리가 아예 없었다 — 그래서 대본 단계에서 아무리 세게 써도 판돈 없는
+ * 소재 위에 목소리만 커졌고, 그건 팩트체크나 일반화 게이트에 걸려 발행률만 깎는다.
+ *
+ * 프롬프트에서 요구만 하고 여기서 안 막으면 실패가 조용해진다 — 모델이 빼먹은 항목이
+ * 그대로 백로그에 앉고, albatross 는 구분할 수 없고, flamingo 는 자극 카드에 쓸 재료가
+ * 없어 다시 밋밋한 나열로 돌아간다. 그래서 **신규 수집분은 막고**(여기),
+ * **기존 재고는 살린다**(읽는 쪽은 전부 옵셔널 — `hasStakes`).
+ * 소재 재고는 target 40 · 5일치 여유라서, 한 번의 보충이 얇아져도 결방이 되지 않는다.
+ */
+const REQUIRED = ['subject', 'country', 'contrast', 'consequence', 'trigger_situation', 'misconception'];
+
+/** 스테이크 3필드를 실제로 갖춘 항목인가 — 구(舊) 재고와 신규를 구분하는 읽기 쪽 판정. */
+export function hasStakes(item) {
+  return ['consequence', 'trigger_situation', 'misconception']
+    .every(k => typeof item?.[k] === 'string' && item[k].trim().length > 0);
+}
+
+/**
+ * 발굴 프롬프트. **반드시 페르소나로 시작한다** — `withBrief` 가 BRIEF 블록을 선두에 붙인다.
+ * @param {object} cfg
+ * @param {string[]} existingSubjects 중복 회피용 기존 주제
+ * @param {number} n
+ */
+export function buildBacklogPrompt(cfg, existingSubjects = [], n = 10) {
+  const domains = (cfg?.channel?.domains || []).join(' / ') || '식사예절 / 인사 / 선물 / 시간관념';
+  const avoid = existingSubjects.slice(-60).map(s => `- ${s}`).join('\n') || '(없음)';
+  return withBrief('camel', `"${cfg?.channel?.vertical || '세계 문화·나라별 차이'}" 인스타 카드뉴스 소재 후보를 **${n}개** 발굴하라.
+
+[절대 규칙 — 어기면 전건 폐기]
+- **우열 비교·일반화·비하 금지, 사실 기술만.** 나라를 서열화하지 말고, "그 나라 사람들은 ~하다"처럼 사람의 집단을 주어로 삼지 마라.
+- 문장의 주어는 언제나 **장소·제도·상황**이다: "○○에서는 ~한다" (○), "○○ 사람들은 ~하다" (✗).
+- 국민성·민족성·천성·유전자로 원인을 설명하지 마라.
+- 지역·세대·상황에 따라 다르면 범위를 정확히 밝혀라("~하는 지역이 있다", "~하는 경우가 많다").
+- 이미 사라진 옛 관습을 현재형으로 쓰지 마라.
+
+[다양성 — 축은 나라가 아니라 **장면**이다]
+- 도메인 태그: ${domains} 중 택1.
+- 같은 나라가 여러 건인 것은 **문제가 아니다**(한 주 내내 일본이어도 좋다 — 연재는 팔로우할 이유가 된다).
+  반복하면 안 되는 것은 trigger_situation 이다. 같은 장면("식당 첫 주문")이 계속 나오면 채널이 한 장면에 갇힌다.
+- [이미 있는 주제]와 겹치지 마라.
+
+[이미 있는 주제]
+${avoid}
+
+[🔴 저장할 이유 — 이게 없으면 그 후보는 폐기된다]
+사람이 카드뉴스를 저장하는 이유는 셋뿐이다: ①나중에 실제로 쓸 것 ②남에게 옮길 대화 소재
+③실수를 피하는 체크리스트. "문화가 다르다"로 끝나는 후보는 셋 중 아무것도 아니다.
+그래서 아래 세 필드를 **반드시** 채워라. 셋 중 하나라도 비면 그 후보는 버려진다.
+- consequence: 모르면 **구체적으로 무슨 일이 나는가**. 벌금·주문 거절·무례로 읽힘·계산이 꼬임·입장 거부처럼
+  겪는 사람에게 실제로 일어나는 일. "문화가 다르다", "오해할 수 있다" 같은 두루뭉술한 말은 값이 아니다.
+- trigger_situation: 한국 사람이 이걸 **실제로 맞닥뜨리는 장면** 하나. "오사카 이자카야 첫 주문",
+  "두바이 공항 환승", "독일 집들이 초대"처럼 시간·장소가 잡혀야 한다. 나라 이름만 쓰지 마라.
+- misconception: 이 주제에 대해 **한국 사람이 흔히 잘못 알고 있는 것**. 남을 깎는 게 아니라
+  읽는 사람 자신의 짐작이 어긋나는 지점이다 — 이 채널에서 누구도 비하하지 않고 쓸 수 있는 유일한 자극 축이다.
+
+⚠ 이 세 필드도 전부 source_hint 로 확인 가능한 **사실**이어야 한다. 자극을 만들려고 지어내지 마라 —
+지어낸 벌금 액수·법 조항은 tortoise 팩트체크에서 그대로 걸려 그날 발행이 통째로 날아간다.
+
+[각 원소 스키마]
+{ "subject": 카드뉴스 제목이 될 한 줄(40자 이내, "○○에서는 ~" 형태 권장),
+  "country": 나라 이름(한글 한 개),
+  "domain": 위 도메인 중 하나,
+  "common_practice": 그 나라에서 실제로 하는 관습(구체적 행동·사물·숫자),
+  "contrast": 한국(또는 우리가 익숙한 방식)과 갈리는 지점 한 줄,
+  "consequence": 모르면 실제로 벌어지는 일 한 줄(구체적 불이익·마찰),
+  "trigger_situation": 한국 사람이 이걸 맞닥뜨리는 구체적 장면 한 줄,
+  "misconception": 한국에서 흔한 오해 한 줄,
+  "source_hint": 나중에 확인 가능한 근거 단서(공공기관·관광청·법령·연구·널리 기록된 관습) }
+
+설명 없이 JSON 배열만 출력(정확히 ${n}개 이내).`);
+}
+
+/**
+ * claude 응답(JSON 배열) → 정규화된 백로그 항목. `seen` 을 갱신하며 중복을 제거한다.
+ * 파싱 실패·비배열은 **빈 배열**(런을 죽이지 않는다 — 보충 실패는 재고로 버틴다).
+ */
+export function ingest(text, { seen = new Set(), now = new Date() } = {}) {
+  let arr;
+  try { arr = extractJson(text); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const fresh = [];
+  const dropped = { missing: 0, dup: 0, shape: 0 };
+  for (const it of arr) {
+    if (!it || typeof it !== 'object') { dropped.shape++; continue; }
+    if (REQUIRED.some(k => typeof it[k] !== 'string' || !it[k].trim())) { dropped.missing++; continue; }
+    const id = idOf(it.subject);
+    if (seen.has(id)) { dropped.dup++; continue; }
+    seen.add(id);
+    fresh.push({
+      id,
+      subject: it.subject.trim(),
+      country: String(it.country).trim(),
+      domain: String(it.domain || '').trim(),
+      common_practice: String(it.common_practice || '').trim(),
+      contrast: it.contrast.trim(),
+      consequence: it.consequence.trim(),
+      trigger_situation: it.trigger_situation.trim(),
+      misconception: it.misconception.trim(),
+      source_hint: String(it.source_hint || '').trim(),
+      created_at: now.toISOString(),
+    });
+  }
+  // 필수필드 결손 폐기는 조용하면 안 된다 — added:0 만 보면 "모델이 안 돌았나"와
+  // "스테이크 3필드를 안 채웠나"가 구분되지 않고, 후자는 프롬프트를 고쳐야 할 신호다.
+  if (dropped.missing) log.warn(`필수필드(스테이크 포함) 결손 폐기 ${dropped.missing}건`);
+  return fresh;
+}
+
+/**
+ * 백로그 보충.
+ * @param {object} [opt]
+ * @param {number} [opt.n] 생성 개수(기본 `backlog.refill_batch`)
+ * @param {object} [opt.deps] `{callClaude}` — 테스트 주입점. 기본은 실 CLI 경로.
+ * @param {boolean} [opt.exempt] 예산 throw 면제(buffer top-up 경로에서만)
+ */
+export function refillBacklog({ n, cfg = null, deps = {}, exempt = false } = {}) {
+  const conf = cfg || loadConfig();
+  const call = deps.callClaude || callClaude;
+  const count = Number.isFinite(n) && n > 0 ? n : (conf.backlog?.refill_batch || 10);
+
+  const existing = loadBacklog();
+  const seen = new Set(existing.map(x => x.id));
+  const prompt = buildBacklogPrompt(conf, existing.map(x => x.subject), count);
+
+  const text = call(prompt, { cfg: conf, exempt });
+  const fresh = ingest(text, { seen });
+  if (fresh.length) appendBacklog(fresh);
+
+  log.info(`백로그 보충: +${fresh.length}건 (요청 ${count} · 총 ${existing.length + fresh.length}건)`);
+  return { ok: true, added: fresh.length, total: existing.length + fresh.length, items: fresh };
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  const i = argv.indexOf('--n');
+  const n = i >= 0 ? parseInt(argv[i + 1], 10) : undefined;
+  try {
+    const r = refillBacklog({ n: Number.isFinite(n) ? n : undefined });
+    process.stdout.write(JSON.stringify({ ok: true, added: r.added, total: r.total }) + '\n');
+    process.exit(0);
+  } catch (e) {
+    log.error(`백로그 보충 실패: ${e.message}`);
+    process.stdout.write(JSON.stringify({ ok: false, error: e.message, diag: e.diag || null }) + '\n');
+    process.exit(2);
+  }
+}
+
+if (isMainModule(import.meta.url)) main();

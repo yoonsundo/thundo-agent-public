@@ -1,0 +1,358 @@
+#!/usr/bin/env node
+/**
+ * cardnews/pick.mjs — Albatross 🕊 best-pick (계획 §3.4, AC-3)
+ *
+ * 사용: node scripts/cardnews/pick.mjs
+ * 계약: stdout JSON `{ok, pick|null, score, breakdown, reason}`. exit 0 / 2=오류
+ *
+ * 미소비 백로그를 구독 claude 로 배치 1콜 채점(surprise·savability·clarity)하고, freshness 는
+ * 로컬 계산 → 가중합 최고 1건. 하루 1건이므로 이 관문이 곧 그날의 채널이다.
+ *
+ * 원본(`shorts-curiosity/pick.mjs`)에서 **복제하지 않은 것**: `pickTopN`·whatif 앵글 상한·
+ * 상한 완화 폴백. 카드뉴스는 하루 1건이고 앵글 개념이 없어 해당 코드가 표현할 대상이 없다.
+ * 복제했다면 죽은 분기가 되어 이후 독자가 "이 채널도 N건을 뽑나?"를 매번 되물었을 것이다.
+ */
+import { mkdirSync, appendFileSync } from 'node:fs';
+import { makeLogger } from '../lib/log.mjs';
+import {
+  loadConfig, loadBacklog, loadIndex, callClaude, extractJson, isMainModule, withBrief,
+  stateRoot, pickScoresPath, kstDate,
+} from './lib.mjs';
+import { hasStakes } from './backlog.mjs';
+import '../lib/force-subscription.mjs';
+
+const log = makeLogger('cardnews/pick');
+
+// ── 소비 여부 ────────────────────────────────────────────────────────────────
+
+/**
+ * 아직 소비되지 않은 백로그 항목.
+ *
+ * 인덱스는 post_id 로 키가 잡히고 각 post 가 `backlog_id` 를 들고 있으므로, 소비된 소재는
+ * 그 역인덱스로 판정한다. **held 도 소비로 본다** — §6.1 이 "재시도해도 같은 결과면 익일 새
+ * post_id 로 **다른 소재**"라고 못박았고, held 된 소재를 다시 pick 하면 매일 같은 것이
+ * 최고점으로 올라와 슬롯을 독점한다(호기심 채널이 `factcheck_fails>=2` 로 따로 막아야 했던
+ * 바로 그 증상). transient held 의 회복은 pick 이 아니라 sweep 이 이어받는 경로다.
+ *
+ * ⚠ 알려진 공백: 팩트체크 hold 는 post_id 발급 **전**에 일어날 수 있어(§3.21) 인덱스에
+ * 흔적이 없다. 그 경우 소재가 다시 뽑힌다. 오케(run-cardnews.mjs, Step 6)가 hold 를
+ * `planned → held` 로 인덱스에 남기면 이 함수가 그대로 걸러낸다.
+ */
+export function consumedBacklogIds(index = loadIndex()) {
+  const ids = new Set();
+  for (const post of Object.values(index || {})) {
+    if (post && post.backlog_id) ids.add(post.backlog_id);
+  }
+  return ids;
+}
+
+export function pendingBacklog({ backlog = null, index = null } = {}) {
+  const items = backlog || loadBacklog();
+  const consumed = consumedBacklogIds(index || loadIndex());
+  return items.filter(it => it && it.id && !consumed.has(it.id));
+}
+
+// ── freshness ────────────────────────────────────────────────────────────────
+
+/** 최근 사용 순 감점 계수 — 가장 최근이 가장 세다. */
+const RECENCY_PENALTY = [0.4, 0.6, 0.8];
+
+/** 단일국 피드 백스톱 — 최근 이 개수가 **전부** 같은 나라일 때만 발화한다. */
+export const COUNTRY_BACKSTOP_WINDOW = 5;
+/** 그때의 감점 계수. freshness 가중 0.15 기준 총점 -0.02 — 밀어내기지 차단이 아니다. */
+export const COUNTRY_BACKSTOP_FACTOR = 0.85;
+
+/**
+ * 최근 발행 이력 → `freshOf(item)`.
+ *
+ * 🔴 회전축 교체(2026-07-31): 나라·도메인 → **`trigger_situation`**.
+ *
+ * 옛 구현은 최근 3건의 나라와 도메인을 각각 감점하고 **작은 쪽**을 취했다. 근거는 "일본 소개
+ * 계정으로 굳는 걸 막는다"였는데, 팔로워 0인 계정에서 그 논리는 거꾸로 선다 — 무엇으로
+ * 알려지는 것이 팔로우할 이유이고, 한국 인스타 정보 계정은 "이 계정 다음 것도 볼 만하겠다"는
+ * 연재 기대로 자란다. 나라 축 감점은 **주간 연재를 구조적으로 불가능하게** 만들었다.
+ *
+ * 그래서 회전은 장면(`trigger_situation`)으로 한다. "이번 주는 일본 5편"이 가능하면서도
+ * 매일 다른 장면(첫 주문 → 공항 환승 → 집들이 초대)을 다루게 된다. 장면이야말로 독자가
+ * 자기 일정에 비춰 보는 축이고, 같은 장면 반복이 진짜 지루함이다.
+ *
+ * 나라는 **약한 백스톱**으로만 남긴다: 최근 ${COUNTRY_BACKSTOP_WINDOW}건이 **전부** 같은
+ * 나라일 때에 한해 ${COUNTRY_BACKSTOP_FACTOR} 배. 5~7편 연재는 통과하고, 진짜 단일국 피드로
+ * 굳는 것만 밀어낸다.
+ *
+ * 구 재고에는 `trigger_situation` 이 없다 → 그 항목만 `domain` 으로 폴백한다(회전축이 통째로
+ * 잠들지 않게). 신규 수집분은 세 필드가 필수라 폴백을 타지 않는다.
+ */
+export function freshnessMap(index = {}, backlog = []) {
+  const byId = new Map(backlog.map(b => [b.id, b]));
+  const recent = Object.values(index || {})
+    .filter(p => p && p.published_at)
+    .sort((a, b) => (a.published_at < b.published_at ? 1 : -1))
+    .map(p => ({
+      situation: rotationKey({
+        trigger_situation: p.trigger_situation || byId.get(p.backlog_id)?.trigger_situation,
+        domain: p.domain || byId.get(p.backlog_id)?.domain,
+      }),
+      country: p.country || byId.get(p.backlog_id)?.country || null,
+    }));
+
+  const recentSituations = recent.map(r => r.situation).filter(Boolean).slice(0, 3);
+  const countryWindow = recent.map(r => r.country).filter(Boolean).slice(0, COUNTRY_BACKSTOP_WINDOW);
+  const monoCountry = countryWindow.length === COUNTRY_BACKSTOP_WINDOW && new Set(countryWindow).size === 1
+    ? countryWindow[0] : null;
+
+  return (item) => {
+    const key = rotationKey(item);
+    const i = key ? recentSituations.indexOf(key) : -1;
+    const situationFactor = i === -1 ? 1.0 : RECENCY_PENALTY[i];
+    const countryFactor = monoCountry && item?.country === monoCountry ? COUNTRY_BACKSTOP_FACTOR : 1.0;
+    return situationFactor * countryFactor;
+  };
+}
+
+/**
+ * 회전 키 — `trigger_situation` 우선, 없으면 `domain` 폴백.
+ * 정규화(공백 접기·소문자)만 한다: 장면 문구는 자유서술이라 표기 흔들림("오사카 이자카야 첫
+ * 주문" / "오사카 이자카야  첫주문")이 같은 장면을 다른 축으로 갈라놓기 쉽다.
+ */
+export function rotationKey(item) {
+  const raw = String(item?.trigger_situation || '').trim() || String(item?.domain || '').trim();
+  return raw ? raw.replace(/\s+/g, ' ').toLowerCase() : null;
+}
+
+// ── 유사 재탕 차단 (shorts-curiosity/pick.mjs:65-110 복제) ───────────────────
+
+/** 유사도 비교용 조사·어미 목록(긴 것 먼저 — 최장일치). */
+const JOSA = ['에서는', '으로는', '이라는', '에게서', '라는', '에서', '으로', '에게', '까지', '부터', '보다', '처럼', '만큼', '이나', '와의', '과의', '한테',
+  '은', '는', '이', '가', '을', '를', '의', '에', '와', '과', '도', '만', '로', '랑'];
+
+/** 어절 끝 조사 1개 절단(어간 2자 이상 보존). */
+export function stripJosa(word) {
+  const w = String(word || '');
+  if (w.length < 3) return w;
+  for (const p of JOSA) {
+    if (w.endsWith(p) && w.length - p.length >= 2) return w.slice(0, -p.length);
+  }
+  return w;
+}
+
+/** 주제 정규화 — 괄호·문장부호 제거 + 어절별 조사 절단 후 이어붙임. */
+export function normalizeSubject(s) {
+  return String(s || '')
+    .replace(/[()[\]{}<>《》「」『』"'“”‘’«»]/g, ' ')
+    .replace(/[.,!?~·:;\-—–_/\\|+*=…%$#@&^]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/).filter(Boolean)
+    .map(stripJosa)
+    .join('');
+}
+
+function charBigrams(s) {
+  const set = new Set();
+  for (let i = 0; i + 1 < s.length; i++) set.add(s.slice(i, i + 2));
+  return set;
+}
+
+/** 두 주제의 정규화 유사도 → `{jaccard, contained}`. */
+export function subjectSimilarity(a, b, { min_chars = 6 } = {}) {
+  const na = normalizeSubject(a), nb = normalizeSubject(b);
+  if (!na || !nb) return { jaccard: 0, contained: false };
+  const contained = na.length >= min_chars && nb.length >= min_chars && (na.includes(nb) || nb.includes(na));
+  const A = charBigrams(na), B = charBigrams(nb);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return { jaccard: union ? inter / union : 0, contained };
+}
+
+/** 후보가 기존 주제들과 사실상 같은 소재인가. sha1 완전일치 dedup 이 못 잡는 재탕을 잡는다. */
+export function isNearDuplicate(subject, existing = [], opts = {}) {
+  const threshold = opts.bigram_jaccard ?? 0.45;
+  const useSubstring = opts.substring !== false;
+  let worst = { dup: false, jaccard: 0, against: null };
+  for (const other of existing) {
+    if (!other) continue;
+    const { jaccard, contained } = subjectSimilarity(subject, other, opts);
+    if ((useSubstring && contained) || jaccard >= threshold) {
+      return { dup: true, jaccard: Number(jaccard.toFixed(3)), contained, against: other };
+    }
+    if (jaccard > worst.jaccard) worst = { dup: false, jaccard: Number(jaccard.toFixed(3)), against: other };
+  }
+  return worst;
+}
+
+/** 이미 소비된 주제 목록 — 인덱스에 subject 가 없는 구항목은 백로그에서 보강. */
+export function doneSubjects(index = {}, backlog = []) {
+  const byId = new Map(backlog.map(b => [b.id, b]));
+  return Object.values(index || {})
+    .map(p => p?.subject || byId.get(p?.backlog_id)?.subject)
+    .filter(Boolean);
+}
+
+// ── 채점 ─────────────────────────────────────────────────────────────────────
+
+export function buildScorePrompt(items) {
+  // 스테이크 3필드를 함께 싣는다 — 이게 빠지면 savability 를 판정할 근거가 후보에 없고,
+  // 채점자는 결국 subject 의 어감만 보고 점수를 매긴다(구 재고는 빈 값으로 나가고, 그건
+  // "저장할 이유가 기록돼 있지 않다"는 사실 그대로다).
+  const list = items.map(it => `{"id":"${it.id}","country":${JSON.stringify(it.country || '')},"domain":${JSON.stringify(it.domain || '')},"subject":${JSON.stringify(it.subject)},"common_practice":${JSON.stringify(it.common_practice || '')},"contrast":${JSON.stringify(it.contrast || '')},"consequence":${JSON.stringify(it.consequence || '')},"trigger_situation":${JSON.stringify(it.trigger_situation || '')},"misconception":${JSON.stringify(it.misconception || '')}}`).join('\n');
+  return withBrief('albatross', `각 카드뉴스 소재 후보를 세 축으로 0.0~1.0 채점하라.
+
+- surprise: 한국 독자 기준 "어? 거기선 그래?" 의 강도(대비가 구체적일수록 높게).
+- savability: 다 보고 **저장**하게 되는가(여행·업무·유학에서 실제로 써먹을 값어치).
+- clarity: 카드 7장(헤드라인 24자·본문 90자)에 군더더기 없이 담기는가.
+
+⚠ **우열 비교·일반화·비하 금지, 사실 기술만.** 후보가 **나라를 서열화**하거나 **국민성·천성으로 원인을 돌리거나** **특정 집단을 비하**한다면 세 축 모두 0.2 이하로 주어라. 이 셋만이다 — 단정적이거나 세거나 불편하다는 이유로 깎지 마라. "장소에서 무엇이 벌어지는가"를 또렷하게 말하는 후보는 위 셋에 해당하지 않는 한 세게 줘도 된다.
+
+⚠ **뻔한 후보를 통과시키는 것도 실패다.** 백과사전에 있고 한국 독자 다수가 이미 아는 것(안전하지만 뻔한 것)은 surprise 0.3 이하로 주어라. 안전한 쪽으로만 힘이 걸리면 채널은 아무도 저장하지 않는 무난한 나열로 수렴한다.
+
+[후보]
+${list}
+
+[출력] JSON 배열만: [{ "id":"...", "surprise":0.0, "savability":0.0, "clarity":0.0 }]. 설명 없이.`);
+}
+
+/**
+ * 후보 전원을 total 내림차순으로 정렬. claude 배치 채점 결과(scores)를 받아 여기서만
+ * 가중합을 계산한다 — 가중치 산수를 한 곳에 모아야 스코어 해석이 갈리지 않는다.
+ */
+export function scoreAll({ items, scores = [], freshOf, weights }) {
+  const w = weights || { surprise: 0.35, savability: 0.30, clarity: 0.20, freshness: 0.15 };
+  const byId = new Map(scores.map(s => [s.id, s]));
+  const fresh = freshOf || (() => 1.0);
+  return items.map(it => {
+    // 미채점 후보를 0 으로 두면 응답이 일부 빠졌을 때 그 후보가 영구 탈락한다 → 중립 0.5.
+    const s = byId.get(it.id) || {};
+    const surprise = Number.isFinite(s.surprise) ? s.surprise : 0.5;
+    const savability = Number.isFinite(s.savability) ? s.savability : 0.5;
+    const clarity = Number.isFinite(s.clarity) ? s.clarity : 0.5;
+    const freshness = fresh(it);
+    const scored = Number.isFinite(s.surprise) || Number.isFinite(s.savability) || Number.isFinite(s.clarity);
+    const total = surprise * (w.surprise || 0)
+      + savability * (w.savability || 0)
+      + clarity * (w.clarity || 0)
+      + freshness * (w.freshness || 0);
+    return { item: it, total, surprise, savability, clarity, freshness, scored };
+  }).sort((a, b) => b.total - a.total);
+}
+
+// ── 채점 분포 로그 (2026-07-31) ──────────────────────────────────────────────
+
+/** 클램프 발화 판정 — 세 축이 **모두** 0.2 이하면 프롬프트의 차단 조항이 걸린 것으로 본다. */
+export const isClamped = (s) => s.scored && s.surprise <= 0.2 && s.savability <= 0.2 && s.clarity <= 0.2;
+/** 뻔함 판정 — 새로 넣은 counter-pressure("백과사전에 있는 것은 surprise ≤0.3")의 발화. */
+export const isObvious = (s) => s.scored && s.surprise <= 0.3;
+
+const stat = (xs) => (xs.length
+  ? { min: Number(Math.min(...xs).toFixed(3)), max: Number(Math.max(...xs).toFixed(3)), mean: Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(3)) }
+  : { min: null, max: null, mean: null });
+
+/**
+ * 채점 분포 요약 — **클램프가 얼마나 자주 발화하는지 아무도 모른다**는 것이 이 로그의 이유다.
+ * 차단 조항은 정규식 게이트보다 **앞**에 있는 LLM 재량이라, 넓게 걸리면 재미있는 소재가
+ * 게이트에 닿기도 전에 죽는데 그 사실이 어디에도 남지 않았다. 발행률만 보고는 원인을
+ * 클램프·팩트체크·게이트 중 무엇으로도 돌릴 수 있어서, 분포 없이는 다음 조정이 추측이 된다.
+ */
+export function summarizeScores(sorted = [], { now = new Date(), reason = 'ok' } = {}) {
+  const scored = sorted.filter(s => s.scored);
+  const clamped = sorted.filter(isClamped);
+  const obvious = sorted.filter(isObvious);
+  const best = sorted[0] || null;
+  return {
+    at: now.toISOString(),
+    date: kstDate(now),
+    reason,
+    candidates: sorted.length,
+    scored: scored.length,
+    unscored: sorted.length - scored.length,
+    clamped: clamped.length,
+    clamped_ids: clamped.map(s => s.item.id),
+    obvious: obvious.length,
+    with_stakes: sorted.filter(s => hasStakes(s.item)).length,
+    surprise: stat(scored.map(s => s.surprise)),
+    savability: stat(scored.map(s => s.savability)),
+    clarity: stat(scored.map(s => s.clarity)),
+    freshness: stat(sorted.map(s => s.freshness)),
+    picked: best ? { id: best.item.id, total: Number(best.total.toFixed(4)), surprise: best.surprise, freshness: best.freshness } : null,
+  };
+}
+
+/** 요약 1줄 append. 실패는 비차단(`appendRun` 과 같은 정책 — 관측이 발행을 죽이지 않는다). */
+export function appendScoreLog(row) {
+  try {
+    mkdirSync(stateRoot(), { recursive: true });
+    appendFileSync(pickScoresPath(), JSON.stringify(row) + '\n', 'utf8');
+  } catch (e) {
+    log.warn(`pick-scores.jsonl 기록 실패(비차단): ${e.message}`);
+  }
+  return row;
+}
+
+/**
+ * 오늘의 1건. 후보 0건이면 `{pick:null, reason}` 으로 **정상 종료**한다 — 소재 고갈은 오류가
+ * 아니라 상태이고, 오케가 `no-pick` 으로 기록해야 할 사건이다.
+ */
+export function pick({ cfg = null, deps = {}, logScores = true } = {}) {
+  const conf = cfg || loadConfig();
+  const call = deps.callClaude || callClaude;
+  const backlog = loadBacklog();
+  const index = loadIndex();
+
+  let items = pendingBacklog({ backlog, index });
+  if (!items.length) return { ok: true, pick: null, score: 0, breakdown: [], reason: 'no-candidates' };
+
+  // 채점 **전에** 유사 재탕을 걷어낸다 — 토큰도 아끼고, 걸러낼 것을 채점하지도 않는다.
+  const simCfg = conf.pick?.similarity || {};
+  if (simCfg.enabled !== false) {
+    const done = doneSubjects(index, backlog);
+    const before = items.length;
+    items = items.filter(it => !isNearDuplicate(it.subject, done, simCfg).dup);
+    if (before !== items.length) log.info(`유사 재탕 제외: ${before - items.length}건`);
+    if (!items.length) return { ok: true, pick: null, score: 0, breakdown: [], reason: 'all-near-duplicate' };
+  }
+
+  let scores = [];
+  try {
+    scores = extractJson(call(buildScorePrompt(items), { cfg: conf }));
+    if (!Array.isArray(scores)) scores = [];
+  } catch (e) {
+    // 채점 실패는 치명적이지 않다 — 전원 중립 0.5 + freshness 로만 순위가 갈린다.
+    // 여기서 던지면 소재 재고가 40건 있어도 그날이 결방이 된다.
+    if (e.budget) throw e;               // 예산 초과는 던진다(폭주 방지가 목적이므로)
+    log.warn(`채점 실패 → freshness 만으로 선정(비차단): ${e.message}`);
+  }
+
+  const freshOf = freshnessMap(index, backlog);
+  const sorted = scoreAll({ items, scores, freshOf, weights: conf.pick?.weights });
+  const best = sorted[0];
+  const distribution = summarizeScores(sorted);
+  if (logScores) appendScoreLog(distribution);
+  log.info(`선정: ${sorted.length}건 채점 · 클램프 ${distribution.clamped}건 · 뻔함(surprise≤0.3) ${distribution.obvious}건`);
+  return {
+    ok: true,
+    pick: best.item,
+    score: Number(best.total.toFixed(4)),
+    breakdown: sorted.slice(0, 5).map(s => ({
+      id: s.item.id, subject: s.item.subject, country: s.item.country, domain: s.item.domain,
+      trigger_situation: s.item.trigger_situation || null,
+      total: Number(s.total.toFixed(4)),
+      surprise: s.surprise, savability: s.savability, clarity: s.clarity, freshness: s.freshness,
+    })),
+    distribution,
+    reason: 'ok',
+  };
+}
+
+function main() {
+  try {
+    const r = pick();
+    process.stdout.write(JSON.stringify(r) + '\n');
+    process.exit(0);
+  } catch (e) {
+    log.error(`선정 실패: ${e.message}`);
+    process.stdout.write(JSON.stringify({ ok: false, error: e.message, diag: e.diag || null }) + '\n');
+    process.exit(2);
+  }
+}
+
+if (isMainModule(import.meta.url)) main();

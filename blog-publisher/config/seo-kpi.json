@@ -1,0 +1,13 @@
+{
+  "schema": "seo-kpi/v1",
+  "niche": "AI 코딩 도구 · AI 퀀트트레이딩",
+  "goal": "3개월 내 일 오가닉 클릭 100",
+  "target_daily_clicks": 100,
+  "deadline": "2026-10-02",
+  "milestones": [
+    { "by": "2026-08-02", "daily_clicks": 10,  "note": "첫 GSC 신호 확보·니치 키워드 정착" },
+    { "by": "2026-09-02", "daily_clicks": 40,  "note": "상위 10 쿼리 CTR 5% 이상" },
+    { "by": "2026-10-02", "daily_clicks": 100, "note": "최종 목표 달성" }
+  ],
+  "note": "daily_brief.mjs SEO 섹션에서 state/seo-metrics.jsonl 최신일 실적과 이 KPI를 비교해 진척률을 표시한다."
+}

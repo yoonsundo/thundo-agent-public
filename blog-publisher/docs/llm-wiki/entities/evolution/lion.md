@@ -1,0 +1,27 @@
+# 엔티티 — lion 진화 이력 (현재 v3)
+
+> lion(CEO 오케스트레이터·통신허브) 에이전트의 EVOLVE-BLOCK 버전 연표. SEED:locked·frontmatter 변경은 기록하지 않는다(영구 불변).
+> 자가발전 메커니즘 일반은 [../../concepts/self-evolution.md](../../concepts/self-evolution.md).
+
+- **역할**: CEO 오케스트레이터·통신허브
+- **단계**: 전체
+- **현재 버전**: v3
+- **정의 파일**: `.claude/agents/lion.md`
+
+## 버전 연표
+
+| 버전 | 날짜 | 주요 변경(EVOLVE-BLOCK) | 트리거 | 출처(iter/commit) |
+|------|------|------------------------|--------|------------------|
+| v1 | 2026-06-26 | 초기 오케스트레이션 계약 | 프로젝트 시작 | Phase1 MVP (9a0c255) |
+| v2 | 2026-06-26 | CEO 승급 — 위임·집계·진단 알고리즘 정교화 | 런 안정화·역할 명확화 | iter10 (8fb2796) |
+| v3 | 2026-06-26 | crane(의사) 이상보고 수신·조율·에스컬레이션 절차 신설 | crane 14번째 에이전트 도입 | crane 도입 (bf16f46/f53038a) |
+
+> 주: 작가(beaver/fox/wolf)의 v1→v5는 iter7 단일 라운드 내 토너먼트 선택의 결과로, 중간 v2~v4는
+> 채택되지 않은 후보다(채택분만 version 증가). 과거 진화는 Phase 3 자율루프가 아니라 사람 주도
+> self-improve 30 iteration의 산물 — 자세히는 [../../concepts/self-evolution.md](../../concepts/self-evolution.md) "현재 상태: OFF".
+
+## 관련
+
+- [../agent-registry.md](../agent-registry.md) — 전체 에이전트 현재 버전·역할
+- [index.md](index.md) — 진화 이력 페이지 카탈로그
+- [../../concepts/self-evolution.md](../../concepts/self-evolution.md) — 자가발전 메커니즘·경계

@@ -1,0 +1,289 @@
+#!/usr/bin/env node
+/**
+ * cardnews-pick.test.mjs — Albatross 🕊 best-pick 유닛테스트 (계획 §3.4 · Step 5)
+ *
+ * 증명하는 것:
+ *   ① 프롬프트가 **albatross BRIEF 로 시작**한다(AC-17) + 가드레일 문구
+ *   ② freshness — 도메인 축과 **나라 축에 같은 감점표**가 적용된다(둘 중 작은 쪽 채택).
+ *      나라 축이 없으면 도메인이 골고루여도 채널이 한 나라 소개 계정으로 굳는다
+ *   ③ `scoreAll` 가중합·정렬, 미채점 후보의 중립 폴백(응답 결손이 영구 탈락을 만들지 않음)
+ *   ④ 유사 재탕 차단 — sha1 완전일치가 못 잡는 문구만 바뀐 재탕
+ *   ⑤ `pendingBacklog` — 인덱스에 이미 있는 backlog_id 는 소비로 본다(held 포함)
+ *   ⑥ 채점 claude 가 죽어도 **선정은 계속된다**(freshness 만으로) — 재고 40건이 있는데
+ *      채점 실패로 결방하지 않는다. 단 예산 초과는 그대로 던진다(폭주 방지가 목적)
+ *
+ * 🔴 실 `claude -p` 미사용 — 전부 `deps.callClaude` 스텁.
+ */
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const TMP = mkdtempSync(join(tmpdir(), 'cardnews-pick-'));
+process.env.STATE_DIR_OVERRIDE = TMP;
+process.env.RUN_MODE = 'mock';
+
+const lib = await import('../cardnews/lib.mjs');
+const pk = await import('../cardnews/pick.mjs');
+
+let passN = 0, failN = 0;
+const ok = (label, cond, extra = '') => {
+  if (cond) { console.log(`  [PASS] ${label}`); passN++; }
+  else { console.log(`  [FAIL] ${label}${extra ? ` — ${extra}` : ''}`); failN++; }
+};
+const eq = (label, got, want) => ok(label, got === want, `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`);
+const near = (label, got, want) => ok(label, Math.abs(got - want) < 1e-9, `got=${got} want=${want}`);
+const section = (s) => console.log(`\n${s}`);
+
+const CFG = lib.loadConfig();
+const GUARD = '우열 비교·일반화·비하 금지, 사실 기술만';
+
+const it = (id, subject, country, domain, trigger_situation = null) => ({
+  id, subject, country, domain,
+  common_practice: '관습', contrast: '대비',
+  consequence: '벌금이 나온다', trigger_situation: trigger_situation ?? `${domain} 장면`,
+  misconception: '한국과 같다고 생각한다',
+  source_hint: '근거', created_at: '2026-08-01T00:00:00.000Z',
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('① 프롬프트 — BRIEF 선두 주입 + 가드레일');
+
+const brief = lib.loadAgentBrief('albatross');
+ok('albatross BRIEF 가 비어있지 않다', brief.length > 100, `len=${brief.length}`);
+
+const prompt = pk.buildScorePrompt([it('aaa', '일본에서는 밥그릇을 든다', '일본', '식사예절')]);
+ok('프롬프트가 albatross BRIEF 로 시작한다', prompt.startsWith(brief), `head='${prompt.slice(0, 40)}…'`);
+ok('프롬프트에 가드레일 문구가 실린다', prompt.includes(GUARD));
+ok('세 축이 모두 프롬프트에 있다', ['surprise', 'savability', 'clarity'].every(a => prompt.includes(a)));
+ok('후보 id 가 실린다', prompt.includes('"aaa"'));
+
+// ── 🔴 클램프 좁히기 (2026-07-31) ───────────────────────────────────────────
+// 이 클램프는 **정규식 게이트보다 앞**에 있는 LLM 재량이다. "웃음거리로 삼는다"는 판정이
+// 애매해서 넓게 적용되고, 그러면 재미있는 소재가 게이트에 닿기도 전에 죽는다 —
+// 게이트는 실측상 장소를 주어로 한 단정적 문장을 통과시키는데도.
+ok('🔴 "웃음거리" 표현이 제거됐다(판정이 애매해 넓게 걸렸다)', !prompt.includes('웃음거리'));
+ok('클램프가 서열화·국민성귀인·비하 셋으로 좁혀졌다',
+  prompt.includes('나라를 서열화') && prompt.includes('국민성·천성') && prompt.includes('비하'));
+ok('🔴 세다는 이유로 깎지 말라는 지시가 있다(반대 방향 압력)',
+  /단정적이거나 세거나 불편하다는 이유로 깎지 마라/.test(prompt));
+
+// counter-pressure — 모든 힘이 안전한 쪽으로만 걸리면 평형점이 밋밋함이다.
+ok('🔴 뻔한 후보에 surprise 상한을 건다', /surprise 0\.3 이하/.test(prompt));
+ok('뻔함의 정의가 프롬프트에 있다', prompt.includes('백과사전에 있고'));
+
+// 스테이크 3필드가 채점자에게 보여야 savability 를 판정할 근거가 생긴다.
+const stakeItem = { id: 'bbb', subject: 's', country: '일본', domain: '식사예절',
+  consequence: '벌금 200유로', trigger_situation: '오사카 첫 주문', misconception: '한국과 같다고 생각' };
+const stakePrompt = pk.buildScorePrompt([stakeItem]);
+for (const f of ['consequence', 'trigger_situation', 'misconception']) {
+  ok(`채점 프롬프트가 ${f} 를 후보에 싣는다`, stakePrompt.includes(f));
+}
+ok('스테이크 값이 실제로 실린다', stakePrompt.includes('벌금 200유로') && stakePrompt.includes('오사카 첫 주문'));
+ok('구 재고(스테이크 없음)도 빈 값으로 안전하게 직렬화된다',
+  pk.buildScorePrompt([{ id: 'ccc', subject: 's', country: '일본' }]).includes('"consequence":""'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('② 🔴 freshness — 회전축은 나라가 아니라 **장면**이다 (2026-07-31 교체)');
+//
+// 옛 구현은 최근 3건의 나라·도메인을 각각 감점하고 작은 쪽을 취했다. 근거는 "일본 소개
+// 계정으로 굳는 걸 막는다"였는데, 팔로워 0인 계정에서 그 논리는 거꾸로 선다 — 무엇으로
+// 알려지는 것이 팔로우할 이유이고, 한국 인스타 정보 계정은 연재 기대로 자란다.
+// 나라 축 감점은 **주간 연재를 구조적으로 불가능하게** 만들었다. 그래서 회전은 장면으로 한다.
+
+const sit = (s) => ({ trigger_situation: s, country: '프랑스' });
+const idx = {
+  'cn-2026-08-03-c': { backlog_id: 'c', trigger_situation: '공항 환승', domain: '교통', country: '독일', published_at: '2026-08-03T00:00:00Z' },
+  'cn-2026-08-02-b': { backlog_id: 'b', trigger_situation: '집들이 초대', domain: '선물·금기', country: '태국', published_at: '2026-08-02T00:00:00Z' },
+  'cn-2026-08-01-a': { backlog_id: 'a', trigger_situation: '식당 첫 주문', domain: '식사예절', country: '일본', published_at: '2026-08-01T00:00:00Z' },
+};
+const fresh = pk.freshnessMap(idx, []);
+near('가장 최근 장면 = 0.4', fresh(sit('공항 환승')), 0.4);
+near('두 번째 장면 = 0.6', fresh(sit('집들이 초대')), 0.6);
+near('세 번째 장면 = 0.8', fresh(sit('식당 첫 주문')), 0.8);
+near('미사용 장면 = 1.0', fresh(sit('결혼식 축의금')), 1.0);
+near('장면 표기 흔들림(공백)은 같은 축으로 본다', fresh(sit('공항   환승')), 0.4);
+
+near('🔴 나라가 최근이어도 장면이 다르면 감점 없음(주간 연재가 가능해진다)',
+  fresh({ trigger_situation: '결혼식 축의금', country: '독일' }), 1.0);
+near('🔴 나라가 3건 연속 같아도 아직 백스톱 미발화(연재 진행 중)',
+  pk.freshnessMap({
+    a: { backlog_id: 'a', trigger_situation: 's1', country: '일본', published_at: '2026-08-01T00:00:00Z' },
+    b: { backlog_id: 'b', trigger_situation: 's2', country: '일본', published_at: '2026-08-02T00:00:00Z' },
+    c: { backlog_id: 'c', trigger_situation: 's3', country: '일본', published_at: '2026-08-03T00:00:00Z' },
+  }, [])({ trigger_situation: 's9', country: '일본' }), 1.0);
+
+// 백스톱 — 최근 WINDOW 건이 **전부** 같은 나라일 때만, 그리고 약하게.
+const mono = {};
+for (let i = 0; i < pk.COUNTRY_BACKSTOP_WINDOW; i++) {
+  mono[`p${i}`] = { backlog_id: `p${i}`, trigger_situation: `장면${i}`, country: '일본', published_at: `2026-08-0${i + 1}T00:00:00Z` };
+}
+const monoFresh = pk.freshnessMap(mono, []);
+near(`🔴 최근 ${pk.COUNTRY_BACKSTOP_WINDOW}건이 전부 같은 나라면 약한 백스톱이 발화한다`,
+  monoFresh({ trigger_situation: '새 장면', country: '일본' }), pk.COUNTRY_BACKSTOP_FACTOR);
+near('백스톱은 다른 나라에는 걸리지 않는다', monoFresh({ trigger_situation: '새 장면', country: '독일' }), 1.0);
+ok('🔴 백스톱은 밀어내기지 차단이 아니다(총점 영향 < 0.03)',
+  (1 - pk.COUNTRY_BACKSTOP_FACTOR) * CFG.pick.weights.freshness < 0.03,
+  `delta=${(1 - pk.COUNTRY_BACKSTOP_FACTOR) * CFG.pick.weights.freshness}`);
+ok('백스톱만으로는 뒤집히지 않는다 — surprise 한 칸 차이가 더 크다',
+  (1 - pk.COUNTRY_BACKSTOP_FACTOR) * CFG.pick.weights.freshness < 0.1 * CFG.pick.weights.surprise);
+
+// 구 재고 폴백 — trigger_situation 이 없으면 domain 으로 돈다(회전축이 통째로 잠들지 않게).
+const legacyFresh = pk.freshnessMap({
+  x: { backlog_id: 'x', domain: '교통', country: '독일', published_at: '2026-08-03T00:00:00Z' },
+}, []);
+near('🔴 구 재고는 domain 으로 폴백한다', legacyFresh({ domain: '교통', country: '프랑스' }), 0.4);
+near('폴백은 다른 도메인엔 걸리지 않는다', legacyFresh({ domain: '교육', country: '프랑스' }), 1.0);
+eq('rotationKey 는 trigger_situation 을 우선한다',
+  pk.rotationKey({ trigger_situation: '공항 환승', domain: '교통' }), '공항 환승');
+eq('rotationKey 는 없으면 domain 폴백', pk.rotationKey({ domain: '교통' }), '교통');
+eq('rotationKey 는 둘 다 없으면 null', pk.rotationKey({}), null);
+
+near('미발행 포스트는 이력에 들어가지 않는다',
+  pk.freshnessMap({ x: { backlog_id: 'x', trigger_situation: '공항 환승', country: '독일', published_at: null } }, [])(sit('공항 환승')), 1.0);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('③ scoreAll — 가중합·정렬·중립 폴백');
+
+const items = [it('a1', '주제 하나', '일본', '식사예절'), it('b2', '주제 둘', '태국', '교통')];
+const W = { surprise: 0.35, savability: 0.30, clarity: 0.20, freshness: 0.15 };
+const sorted = pk.scoreAll({
+  items,
+  scores: [{ id: 'a1', surprise: 1, savability: 1, clarity: 1 }, { id: 'b2', surprise: 0, savability: 0, clarity: 0 }],
+  freshOf: () => 1.0, weights: W,
+});
+eq('만점 후보가 1위', sorted[0].item.id, 'a1');
+near('만점 total = 1.0', sorted[0].total, 1.0);
+near('0점 후보 total = freshness 몫만', sorted[1].total, 0.15);
+
+const neutral = pk.scoreAll({ items, scores: [{ id: 'a1', surprise: 1, savability: 1, clarity: 1 }], freshOf: () => 1.0, weights: W });
+near('미채점 후보는 0 이 아니라 중립 0.5 로 산정된다', neutral.find(s => s.item.id === 'b2').total, 0.5 * 0.85 + 0.15);
+
+const byFresh = pk.scoreAll({ items, scores: [], freshOf: (i) => (i.domain === '교통' ? 1.0 : 0.4), weights: W });
+eq('채점이 통째로 없으면 freshness 로 순위가 갈린다', byFresh[0].item.id, 'b2');
+ok('🔴 freshOf 는 항목 전체를 받는다(장면 축을 보려면 필수)',
+  byFresh.every(s => Number.isFinite(s.freshness)));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('④ 유사 재탕 차단');
+
+eq('조사·괄호·문장부호를 지운 정규화가 같은 계열을 한 문자열로 모은다',
+  pk.normalizeSubject('일본에서는 「밥그릇을」 든다!'), pk.normalizeSubject('일본 밥그릇 든다'));
+ok('완전 포함관계는 중복', pk.isNearDuplicate('일본에서는 밥그릇을 들고 먹는다 (예절편)', ['일본에서는 밥그릇을 들고 먹는다']).dup);
+ok('문구만 바뀐 재탕은 중복(sha1 은 못 잡는다)',
+  pk.isNearDuplicate('일본에서는 밥그릇을 들고 먹는다', ['일본에서는 밥그릇을 손에 들고 먹는다']).dup);
+ok('무관한 주제는 중복 아님',
+  !pk.isNearDuplicate('핀란드 사우나에서는 침묵이 편안하다', ['일본에서는 밥그릇을 들고 먹는다']).dup);
+ok('빈 목록이면 중복 아님', !pk.isNearDuplicate('아무거나', []).dup);
+ok('stripJosa 는 어간 2자를 보존한다', pk.stripJosa('밥은') === '밥은' && pk.stripJosa('밥그릇을') === '밥그릇');
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑤ pendingBacklog — 인덱스 소비 판정');
+
+const backlog = [it('a', '주제 A', '일본', '식사예절'), it('b', '주제 B', '태국', '교통'), it('c', '주제 C', '독일', '교육')];
+const consumed = {
+  'cn-2026-08-01-a': { backlog_id: 'a', status: 'published' },
+  'cn-2026-08-02-b': { backlog_id: 'b', status: 'held', held_reason: 'gate:generalization' },
+};
+const pending = pk.pendingBacklog({ backlog, index: consumed });
+eq('미소비 1건만 남는다', pending.length, 1);
+eq('남은 것은 c', pending[0].id, 'c');
+ok('🔴 held 도 소비로 본다(매일 같은 소재가 슬롯을 독점하지 않게)',
+  !pending.some(p => p.id === 'b'));
+eq('빈 인덱스면 전건 pending', pk.pendingBacklog({ backlog, index: {} }).length, 3);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑥ pick() — 스텁 경로 · 채점 실패 복원력 · 예산 초과 전파');
+
+lib.appendBacklog(backlog);
+lib.resetClaudeCalls();
+
+const scoreStub = () => JSON.stringify([
+  { id: 'a', surprise: 0.2, savability: 0.2, clarity: 0.2 },
+  { id: 'b', surprise: 0.9, savability: 0.9, clarity: 0.9 },
+  { id: 'c', surprise: 0.5, savability: 0.5, clarity: 0.5 },
+]);
+const r = pk.pick({ cfg: CFG, deps: { callClaude: scoreStub } });
+eq('ok', r.ok, true);
+eq('최고점 후보가 선정된다', r.pick.id, 'b');
+eq('reason=ok', r.reason, 'ok');
+ok('breakdown 이 상위 후보를 싣는다', Array.isArray(r.breakdown) && r.breakdown.length >= 3, JSON.stringify(r.breakdown?.length));
+ok('breakdown 에 네 축이 모두 있다',
+  ['surprise', 'savability', 'clarity', 'freshness'].every(k => k in r.breakdown[0]));
+
+const rFail = pk.pick({ cfg: CFG, deps: { callClaude: () => { throw new Error('claude 실행 실패(network)'); } } });
+eq('🔴 채점이 죽어도 선정은 계속된다(결방 방지)', rFail.ok, true);
+ok('선정 결과가 있다', rFail.pick !== null);
+
+let budgetErr = null;
+try {
+  pk.pick({ cfg: CFG, deps: { callClaude: () => { const e = new Error('budget: 런당 claude 호출 상한 초과(10/9)'); e.budget = { calls: 10, cap: 9 }; throw e; } } });
+} catch (e) { budgetErr = e; }
+ok('예산 초과는 삼키지 않고 던진다(폭주 방지)', budgetErr !== null && Boolean(budgetErr.budget), budgetErr?.message);
+
+// 후보 0건 = 오류가 아니라 상태.
+const empty = pk.pick({ cfg: CFG, deps: { callClaude: scoreStub } });
+// (위 pick 은 인덱스를 쓰지 않으므로 여전히 후보가 있다 — 백로그를 비워 확인한다)
+rmSync(lib.backlogPath(), { force: true });
+const none = pk.pick({ cfg: CFG, deps: { callClaude: scoreStub } });
+eq('후보 0건은 ok:true + pick:null', none.ok && none.pick === null, true);
+eq('사유가 no-candidates', none.reason, 'no-candidates');
+ok('후보가 있을 땐 pick 이 null 이 아니다', empty.pick !== null);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑦ 🔴 채점 분포 로그 — 클램프가 얼마나 자주 발화하는지 아무도 몰랐다');
+//
+// 클램프는 게이트보다 앞의 LLM 재량이라, 넓게 걸리면 소재가 게이트에 닿기도 전에 죽는데
+// 그 사실이 어디에도 남지 않았다. 발행률만 보고는 원인을 클램프·팩트체크·게이트 중
+// 무엇으로도 돌릴 수 있어서, 분포 없이는 다음 조정이 전부 추측이 된다.
+
+const distItems = [it('d1', '뻔한 주제', '일본', '식사예절'), it('d2', '센 주제', '독일', '교통'), it('d3', '무채점', '태국', '교육')];
+const distSorted = pk.scoreAll({
+  items: distItems,
+  scores: [
+    { id: 'd1', surprise: 0.2, savability: 0.1, clarity: 0.2 },   // 클램프 발화(세 축 ≤0.2)
+    { id: 'd2', surprise: 0.9, savability: 0.8, clarity: 0.7 },
+  ],
+  freshOf: () => 1.0, weights: W,
+});
+eq('클램프 판정 — 세 축 모두 ≤0.2', pk.isClamped(distSorted.find(s => s.item.id === 'd1')), true);
+eq('센 후보는 클램프 아님', pk.isClamped(distSorted.find(s => s.item.id === 'd2')), false);
+eq('🔴 미채점(중립 0.5)은 클램프로 세지 않는다(집계 오염 방지)',
+  pk.isClamped(distSorted.find(s => s.item.id === 'd3')), false);
+eq('뻔함 판정 — surprise ≤0.3', pk.isObvious(distSorted.find(s => s.item.id === 'd1')), true);
+
+const summary = pk.summarizeScores(distSorted);
+eq('후보 수', summary.candidates, 3);
+eq('채점된 후보 수', summary.scored, 2);
+eq('미채점 수', summary.unscored, 1);
+eq('클램프 발화 건수', summary.clamped, 1);
+ok('클램프된 id 가 남는다(어느 소재가 죽었는지 추적 가능)', summary.clamped_ids.includes('d1'));
+eq('뻔함 건수', summary.obvious, 1);
+eq('스테이크 보유 건수', summary.with_stakes, 3);
+ok('축별 통계가 있다', ['surprise', 'savability', 'clarity', 'freshness'].every(k => summary[k] && 'mean' in summary[k]));
+near('surprise 평균', summary.surprise.mean, 0.55);
+ok('선정 결과가 함께 기록된다', summary.picked?.id === 'd2');
+ok('날짜(KST)가 기록된다', /^\d{4}-\d{2}-\d{2}$/.test(summary.date));
+eq('빈 후보도 죽지 않는다', pk.summarizeScores([]).candidates, 0);
+eq('빈 후보의 picked 는 null', pk.summarizeScores([]).picked, null);
+
+// pick() 이 실제로 파일에 남기는가.
+lib.appendBacklog(backlog);
+const rLog = pk.pick({ cfg: CFG, deps: { callClaude: scoreStub } });
+ok('pick 결과에 distribution 이 실린다', Boolean(rLog.distribution));
+ok('pick-scores.jsonl 이 runs.jsonl 의 형제로 생성된다',
+  existsSync(lib.pickScoresPath()) && lib.pickScoresPath().endsWith('pick-scores.jsonl'), lib.pickScoresPath());
+const logged = readFileSync(lib.pickScoresPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+ok('JSONL 1줄 이상이 append 된다', logged.length >= 1);
+eq('마지막 줄이 이번 선정을 담는다', logged[logged.length - 1].picked.id, rLog.pick.id);
+const before = logged.length;
+pk.pick({ cfg: CFG, deps: { callClaude: scoreStub } });
+eq('호출마다 1줄씩 누적된다(덮어쓰지 않는다)',
+  readFileSync(lib.pickScoresPath(), 'utf8').trim().split('\n').length, before + 1);
+pk.pick({ cfg: CFG, deps: { callClaude: scoreStub }, logScores: false });
+eq('logScores:false 면 기록하지 않는다',
+  readFileSync(lib.pickScoresPath(), 'utf8').trim().split('\n').length, before + 1);
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${failN === 0 ? 'PASS' : 'FAIL'} — ${passN} passed, ${failN} failed`);
+rmSync(TMP, { recursive: true, force: true });
+process.exit(failN === 0 ? 0 : 1);

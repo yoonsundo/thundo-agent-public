@@ -1,0 +1,18 @@
+{
+  "_readme": [
+    "관찰 대상(거래처 서버·경로) 실값 파일의 형식 예시.",
+    "이 파일을 config/observed-targets.json 으로 복사하고 실값을 채운다.",
+    "실값 파일은 .gitignore 로 제외된다 — 남의 인프라 목록을 저장소에 남기지 않기 위함이다.",
+    "host 는 ~/.ssh/config 의 호스트 별칭. IP 를 직접 적지 말 것."
+  ],
+  "parrot": {
+    "name": "<관찰 대상 프로젝트명>",
+    "host": "<ssh-host-alias>",
+    "base": "/var/www/<dev-체크아웃-경로>",
+    "prod_host": "<ssh-host-alias>",
+    "prod_base": "/var/www/<prod-체크아웃-경로>"
+  },
+  "woodpecker": {
+    "host": "<ssh-host-alias>"
+  }
+}

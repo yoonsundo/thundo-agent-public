@@ -1,0 +1,7 @@
+{
+  "schema": "budget/v1",
+  "billing": "claude-max-20x-subscription",
+  "note": "토큰당 과금 아님 — Max 한도 소모 보호용. 정상 ~300~500k토큰/40~60콜, 하드캡은 약 2배.",
+  "daily_hard_cap": { "tokens": 1000000, "agent_calls": 80, "image": { "tokens": 200000, "calls": 10 } },
+  "run_reserve": { "tokens": 100000, "agent_calls": 10 }
+}

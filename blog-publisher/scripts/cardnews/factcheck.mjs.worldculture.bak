@@ -1,0 +1,211 @@
+#!/usr/bin/env node
+/**
+ * cardnews/factcheck.mjs — Tortoise 🐢 사실 안전망 (계획 §3.5, AC-20)
+ *
+ * 계약: `factCheck(item, {cfg})` → `{verdict, note, source, needs_correction,
+ *        corrected_subject, corrected_contrast}`. CLI: stdout JSON.
+ *
+ * 🔴 **차단권만.** `verdict==='ok'` 가 아니면 그 소재는 제작되지 않는다. `ok` 는 "막을 이유를
+ * 못 찾았다"이지 "보증한다"가 아니며, 이 모듈은 어떤 경로로도 통과를 *만들어내지* 않는다.
+ *
+ * US-010(호기심 채널 2026-07-30 실사고)의 이식: 구계약은 `{verdict,note,source}` 뿐이라
+ * **"사실이지만 세부 수치가 틀렸다"가 통째로 새어나갔다** — 팩트체커가 note 에 "반드시
+ * 수정할 것"이라 적었는데 verdict 가 ok 라서 기계가 못 읽고 발행했다. 카드뉴스에서 그 실패는
+ * 나라명·연도·기관명 오류로 나타나고, 인스타 발행 API 에는 삭제 엔드포인트가 없다.
+ * 그래서 ①정정 요구를 **구조화 필드**로 받고 ②정정본을 대본까지 흘려보내고
+ * ③정정을 적용할 수 없으면 **발행하지 않고 보류**한다.
+ *
+ * 🔴 반환의 `source`·`note` 는 상위(script.mjs)가 `provenance` 로 **반드시 영속화**한다(§5.1).
+ * 이게 없으면 테이크다운 런북이 운영자에게 "발행된 게시물"만 쥐여주고 "왜 믿었는가"는
+ * 아무 데도 없다.
+ */
+import { makeLogger } from '../lib/log.mjs';
+import { loadConfig, callClaude, extractJson, isMainModule, withBrief } from './lib.mjs';
+import '../lib/force-subscription.mjs';
+
+const log = makeLogger('cardnews/factcheck');
+
+const CORRECTION_RULE = `
+[정정 규칙 — 반드시 지켜라]
+- 나라명·연도·기관명·수치·단위가 틀렸다면, 핵심 주장이 참이라 **verdict 를 ok 로 두더라도**
+  needs_correction=true 로 하고 corrected_subject·corrected_contrast 를 **둘 다** 채워라.
+- corrected_subject/corrected_contrast 는 "무엇을 고쳐라"는 지시문이 아니라, **그대로 쓸 수 있는
+  정정된 완성 문장**이어야 한다(원문과 같은 어투·길이감, 주제는 40자 이내가 좋다).
+- 관습의 **범위**가 틀린 경우(특정 지역·세대·업종 한정인데 전국으로 단정)도 정정 대상이다.
+- 고칠 게 없으면 needs_correction=false, 두 필드는 빈 문자열로 둬라.
+- ⚠ note 에만 "수정 필요"라고 적고 정정 문장을 비워 두면 그 소재는 **발행되지 않고 폐기**된다.`;
+
+/** 구형 응답(구조화 필드 없음)에서 "정정 요구"를 읽어내는 신호. 애매하면 막는 쪽. */
+export const CORRECTION_SIGNALS = [
+  /반드시\s*(수정|정정|교정)/,
+  /(수정|정정|교정)\s*(이\s*)?(반드시|필요|해야|할\s*것)/,
+  /자릿수/,
+  /사실과\s*다르/,
+  /틀렸|틀림|오류/,
+  /과장(이거나|이며|됨|이다)/,
+  /(전국|전체)\s*(적)?으로는?\s*(아니|틀)/,
+  /일부\s*지역에만/,
+  /\d[\d,.]*(\s*(억|만|천|조|원|달러|년|개월|개|명|배|살|위|톤|초|분|시간|일|주|%|퍼센트|킬로그램|킬로|미터|도))*\s*(은|는|이|가)?\s*아님/,
+];
+
+export function noteDemandsCorrection(note) {
+  const s = String(note || '');
+  return CORRECTION_SIGNALS.some(re => re.test(s));
+}
+
+/** note 가 **제목/주제**의 오류를 지목했는가 — 이 경우 subject 정정이 없으면 적용 불가로 본다. */
+export function noteFlagsSubject(note) {
+  return /제목|타이틀|주제|subject|자릿수|나라\s*(이름|명)/i.test(String(note || ''));
+}
+
+const usableText = (v) => {
+  const s = String(v ?? '').trim();
+  if (!s || s.length > 200) return '';
+  if (/^(수정|정정|교정|없음|해당\s*없음|n\/?a)$/i.test(s)) return '';
+  if (/(수정|정정|교정)\s*(할\s*것|필요|요망)/.test(s)) return '';
+  return s;
+};
+
+/**
+ * LLM 응답 → 정규화된 판정.
+ *
+ * **미지의 verdict 는 `doubtful` 로 떨어진다**(`ok` 가 아니다). 모델이 필드를 빠뜨리거나
+ * 오타를 내는 것이 통과 사유가 되면 안 된다.
+ * 구형 응답도 죽지 않고 처리한다: verdict=ok 인데 note 가 강한 정정을 요구하면
+ * needs_correction 을 **끌어올려**(정정 문장은 없으니) applyCorrection 이 보류시키게 한다.
+ */
+export function normalizeFactcheck(obj = {}) {
+  const verdict = ['ok', 'doubtful', 'false'].includes(obj?.verdict) ? obj.verdict : 'doubtful';
+  const note = String(obj?.note || '');
+  const corrected_subject = usableText(obj?.corrected_subject);
+  const corrected_contrast = usableText(obj?.corrected_contrast);
+  const hasField = typeof obj?.needs_correction === 'boolean';
+  const inferred = noteDemandsCorrection(note);
+  // 모델이 필드를 false 로 두고 note 에만 "반드시 수정"을 적는 실제 패턴 방어 — note 가
+  // 정정을 요구하면 구조화 필드가 그것을 false 로 덮어쓰지 못한다.
+  const needs_correction = (hasField ? obj.needs_correction : false) || inferred;
+  return {
+    verdict, note, source: String(obj?.source || ''),
+    needs_correction, corrected_subject, corrected_contrast,
+    correction_inferred: !hasField && inferred,
+  };
+}
+
+/**
+ * 정정 반영 — 정정본이 subject/contrast 자리를 **대체**해 대본·캡션까지 흘러간다.
+ * 적용 불가면 `applied=false` → 호출자는 발행하지 말고 보류해야 한다.
+ */
+export function applyCorrection(item, fc = {}) {
+  if (!fc.needs_correction) return { applied: true, changed: false, item, reason: 'no_correction_needed' };
+  const cs = usableText(fc.corrected_subject);
+  const cc = usableText(fc.corrected_contrast);
+  // 정정 요구는 있는데 쓸 수 있는 정정 문장이 없다 → 알려진 오류를 내보내지 않는다.
+  if (!cs || !cc) return { applied: false, changed: false, item, reason: 'correction_missing' };
+  const sameSubject = cs === String(item?.subject || '').trim();
+  const sameContrast = cc === String(item?.contrast || '').trim();
+  if (sameSubject && sameContrast) return { applied: false, changed: false, item, reason: 'correction_identical' };
+  if (noteFlagsSubject(fc.note) && sameSubject) {
+    return { applied: false, changed: false, item, reason: 'subject_not_corrected' };
+  }
+  return {
+    applied: true, changed: true, reason: 'corrected',
+    item: {
+      ...item, subject: cs, contrast: cc,
+      factcheck_corrected: true,
+      original_subject: item?.subject, original_contrast: item?.contrast,
+    },
+  };
+}
+
+/**
+ * 판정 1건 → 제작/보류 결정(3갈래, `run-curiosity.mjs:66-80` 복제).
+ *  ① verdict≠ok                    → hold
+ *  ② ok + 정정필요 + 정정본 있음    → 정정 반영 후 제작
+ *  ③ ok + 정정필요 + 정정 불가      → hold (알려진 오류를 내보내지 않는다)
+ *
+ * `held_reason` 을 `factcheck:` 접두로 유지한다 — `classifyHeld` 가 이 접두를 보고
+ * `permanent` 로 분류하고(재시도해도 같은 결과), 1-A 집계에서 면제되지 않는다.
+ */
+export function resolveFactcheck(item, fc = {}) {
+  if (fc.verdict !== 'ok') {
+    return { action: 'hold', item, reason: `factcheck:${fc.verdict}`, note: fc.note || '', log: `사실확인 ${fc.verdict}` };
+  }
+  const corr = applyCorrection(item, fc);
+  if (!corr.applied) {
+    return {
+      action: 'hold', item,
+      reason: 'factcheck:correction-unapplicable',
+      note: `정정 적용 불가(${corr.reason}) :: ${fc.note || ''}`,
+      log: `사실확인 ok 이나 정정 적용 불가(${corr.reason}) — 알려진 오류 발행 방지`,
+    };
+  }
+  return { action: 'produce', item: corr.item, corrected: corr.changed, reason: 'ok', note: fc.note || '', log: 'ok' };
+}
+
+export function buildPrompt(item) {
+  // 스테이크 3필드는 **있을 때만** 싣는다(구 재고에는 없다). 빈 라벨을 보여주면 모델이
+  // 그 칸을 채우려 든다.
+  const stake = (label, v) => (String(v || '').trim() ? `${label}: ${String(v).trim()}\n` : '');
+  return withBrief('tortoise', `아래 "나라별 문화 차이" 주장이 실제로 참인지 판정하라. 과장·미확인 일화·이미 사라진 옛 관습을 현재형으로 말한 것은 통과시키지 마라.
+
+주제: ${item?.subject ?? ''}
+나라: ${item?.country ?? ''}
+도메인: ${item?.domain ?? ''}
+그 나라의 관습: ${item?.common_practice ?? ''}
+우리와 갈리는 지점: ${item?.contrast ?? ''}
+${stake('모르면 벌어지는 일', item?.consequence)}${stake('맞닥뜨리는 장면', item?.trigger_situation)}${stake('한국에서 흔한 오해', item?.misconception)}근거 단서: ${item?.source_hint || '(없음)'}
+
+[반드시 확인]
+① 실재성 — 실제로 존재하는 관습인가, 여행 커뮤니티에서 재생산된 미확인 일화인가.
+② 범위 — 그 나라 전체가 맞는가, 특정 지역·세대·상황·업종 한정인가(한정인데 전국으로 단정했다면 사실 오류다).
+③ 시제 — 지금도 통용되는가, 사라진 관습인가.
+④ 수치·고유명사 — 나라명·연도·기관명·금액·단위가 정확한가.
+   🔴 **"모르면 벌어지는 일"도 여기 포함된다** — 벌금 액수·법 조항·거절되는 절차는 지어내기 가장 쉬운 자리이고,
+   자극을 키우려 부풀린 대가가 그대로 카드 앞면에 실린다. 근거로 확인되지 않으면 정정하거나 막아라.
+
+⚠ **우열 비교·일반화·비하 금지, 사실 기술만.** 주장이 사실이더라도 나라를 서열화하거나 국민성·천성으로 원인을 설명하거나 특정 집단을 조롱하는 방식이면 doubtful 이하로 막아라.
+
+[출력] JSON 객체만:
+{ "verdict": "ok" | "doubtful" | "false",
+  "note": 한 줄 근거/이유,
+  "source": 확인 가능한 근거(공공기관·관광청·법령·연구·주요 언론. 없으면 빈문자열),
+  "needs_correction": true|false,
+  "corrected_subject": 정정된 주제 한 줄,
+  "corrected_contrast": 정정된 대비 한 줄 }
+- ok: 관습이 실재하고 범위·시제·수치가 정확함. doubtful: 근거가 약하거나 범위가 과장됨. false: 사실이 아님.
+${CORRECTION_RULE}`);
+}
+
+/**
+ * 소재 1건 팩트체크. **호출 실패는 throw 한다** — 팩트체크가 안 돌았는데 통과로 처리하는
+ * 경로를 만들지 않는 것이 차단권만 가진 단계의 유일한 안전 설계다(fail-closed).
+ */
+export function factCheck(item, { cfg = null, deps = {} } = {}) {
+  const conf = cfg || loadConfig();
+  if (conf.factcheck?.enabled === false) {
+    log.warn('factcheck.enabled=false — 검증 없이 통과시키지 않고 doubtful 로 막는다');
+    return normalizeFactcheck({ verdict: 'doubtful', note: 'factcheck.enabled=false (검증 비활성)' });
+  }
+  const call = deps.callClaude || callClaude;
+  const raw = extractJson(call(buildPrompt(item), { cfg: conf }));
+  const fc = normalizeFactcheck(raw);
+  log.info(`사실확인 [${fc.verdict}] ${item?.subject ?? ''}${fc.needs_correction ? ' (정정요구)' : ''}`);
+  return fc;
+}
+
+function main() {
+  try {
+    const raw = process.argv[2];
+    if (!raw) { process.stderr.write('사용법: factcheck.mjs \'<BacklogItem JSON>\'\n'); process.exit(2); }
+    const item = JSON.parse(raw);
+    const fc = factCheck(item);
+    process.stdout.write(JSON.stringify({ ok: true, ...fc, resolution: resolveFactcheck(item, fc) }) + '\n');
+    process.exit(0);
+  } catch (e) {
+    log.error(`팩트체크 실패: ${e.message}`);
+    process.stdout.write(JSON.stringify({ ok: false, error: e.message, diag: e.diag || null }) + '\n');
+    process.exit(2);
+  }
+}
+
+if (isMainModule(import.meta.url)) main();

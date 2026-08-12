@@ -1,0 +1,412 @@
+#!/usr/bin/env node
+/**
+ * cardnews/script.mjs — Flamingo 🦩 대본 + 예비 대본 buffer (계획 §3.6)
+ *
+ * 계약: `generateScript(item, {cfg})` → 대본 JSON + `state/cardnews/work/{post_id}/script.json`.
+ *
+ * 스키마: cover(1) + cards(`cards.body_count`, 기본 5) + outro(1) = 기본 **7**. AC-4 의 "7장"이
+ * 렌더가 아니라 **스키마 수준에서** 보장된다 — 렌더에서 세는 것보다 여기서 막는 것이 싸고,
+ * Playwright·Supabase 비용을 태우기 전에 실패한다. 장수는 config 가 정하고(`bodyCardCount`),
+ * 기본값은 그대로 5 라 오늘 동작은 변하지 않는다.
+ *
+ * 재생성: `resolveScriptWithBudget`(`shorts-curiosity/script.mjs:220-263`)의 **재시도 구조만**
+ * 차용한다. 음절 예산 로직은 영상 길이용이라 카드뉴스에 대응물이 없다 — 여기서는 글자수
+ * 상한(headline 24 / body 90)이 그 자리를 대신하고, 초과 사실을 힌트로 붙여 재생성한다
+ * (맹목 재시도는 같은 상한에 또 붙는다).
+ *
+ * 🔴 **provenance 영속화**: `scripted` 전이 시 `source_hint`·`factcheck_source`·`factcheck_note`
+ * 를 인덱스에 남긴다(§5.1). 이게 없으면 테이크다운 요청이 들어왔을 때 운영자 손에는 발행된
+ * 게시물만 있고 "우리가 왜 이 주장을 믿었는가"는 아무 데도 없다.
+ */
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { makeLogger } from '../lib/log.mjs';
+import {
+  loadConfig, callClaude, extractJson, isMainModule, withBrief, workDir, bufferDir, transition,
+} from './lib.mjs';
+import '../lib/force-subscription.mjs';
+
+const log = makeLogger('cardnews/script');
+
+/** 기본 본문 장수 — config 가 없거나 값이 이상할 때의 폴백. cover(1)+5+outro(1)=7 (AC-4). */
+export const BODY_CARDS = 5;
+
+/** 허용 범위 — 3 미만은 역할 배치(자극/유용/반전)가 성립하지 않고, 7 초과는 캐러셀 이탈이 커진다. */
+export const BODY_CARDS_MIN = 3;
+export const BODY_CARDS_MAX = 7;
+
+/**
+ * 본문 장수 — **config `cards.body_count` 가 진실이다.**
+ *
+ * 이전에는 `BODY_CARDS = 5` 라는 코드 상수가 검증(:54)과 프롬프트를 동시에 지배해서,
+ * `config/cardnews.json` 의 `cards.count` 는 아무것도 하지 않는 죽은 값이었다 — 그 값을
+ * 고친 사람은 아무 변화도 얻지 못하고, 왜 안 먹는지 알 방법도 없었다.
+ * 범위를 벗어난 값은 throw 하지 않고 클램프한다: 설정 오타로 그날 발행을 날리는 것보다
+ * 기본값으로 돌면서 경고를 남기는 편이 낫다.
+ */
+export function bodyCardCount(cfg = {}) {
+  const raw = cfg?.cards?.body_count;
+  if (raw == null) return BODY_CARDS;
+  const n = Number(raw);
+  if (!Number.isInteger(n)) { log.warn(`cards.body_count=${raw} 가 정수가 아니다 → ${BODY_CARDS} 사용`); return BODY_CARDS; }
+  if (n < BODY_CARDS_MIN || n > BODY_CARDS_MAX) {
+    const c = Math.min(BODY_CARDS_MAX, Math.max(BODY_CARDS_MIN, n));
+    log.warn(`cards.body_count=${n} 이 허용 범위(${BODY_CARDS_MIN}~${BODY_CARDS_MAX}) 밖 → ${c} 로 클램프`);
+    return c;
+  }
+  return n;
+}
+
+// ── 검증 ─────────────────────────────────────────────────────────────────────
+
+const len = (s) => String(s ?? '').trim().length;
+
+/**
+ * 대본 스키마·글자수 검증 → `{ok, violations[]}`.
+ * 위반을 **모아서** 돌려주는 이유: 재생성 힌트에 전부 실어야 한 번에 고쳐지고, 한 건씩
+ * 알려주면 3회 시도를 한 필드 고치는 데 다 쓴다.
+ */
+export function validateScript(script, cfg = {}) {
+  const maxH = cfg?.cards?.headline_max_chars ?? 24;
+  const maxB = cfg?.cards?.body_max_chars ?? 90;
+  const v = [];
+
+  if (!script || typeof script !== 'object') return { ok: false, violations: ['대본이 객체가 아니다'] };
+
+  if (!script.cover || !len(script.cover.headline)) v.push('cover.headline 없음');
+  else if (len(script.cover.headline) > maxH) v.push(`cover.headline ${len(script.cover.headline)}자 > ${maxH}자`);
+  if (script.cover && len(script.cover.sub) > 34) v.push(`cover.sub ${len(script.cover.sub)}자 > 34자`);
+  if (!script.cover || !len(script.cover.country)) v.push('cover.country 없음');
+
+  const want = bodyCardCount(cfg);
+  const cards = Array.isArray(script.cards) ? script.cards : [];
+  if (cards.length !== want) v.push(`cards ${cards.length}장 ≠ ${want}장 (표지·마무리 제외)`);
+  cards.forEach((c, i) => {
+    const n = c?.index ?? i + 1;
+    if (!len(c?.headline)) v.push(`cards[${n}].headline 없음`);
+    else if (len(c.headline) > maxH) v.push(`cards[${n}].headline ${len(c.headline)}자 > ${maxH}자`);
+    if (!len(c?.body)) v.push(`cards[${n}].body 없음`);
+    else if (len(c.body) > maxB) v.push(`cards[${n}].body ${len(c.body)}자 > ${maxB}자`);
+  });
+
+  if (!script.outro || !len(script.outro.headline)) v.push('outro.headline 없음');
+  else if (len(script.outro.headline) > maxH) v.push(`outro.headline ${len(script.outro.headline)}자 > ${maxH}자`);
+  if (script.outro && len(script.outro.body) > maxB) v.push(`outro.body ${len(script.outro.body)}자 > ${maxB}자`);
+
+  for (const k of ['hook', 'body', 'cta']) {
+    if (!len(script.caption_sections?.[k])) v.push(`caption_sections.${k} 없음`);
+  }
+  if (!Array.isArray(script.hashtags) || !script.hashtags.length) v.push('hashtags 없음');
+
+  return { ok: v.length === 0, violations: v };
+}
+
+/** 총 카드 수 — 스키마가 7을 보장하는지 한 눈에 세는 헬퍼(게이트·테스트 공용). */
+export function cardCount(script) {
+  return (script?.cover ? 1 : 0) + (Array.isArray(script?.cards) ? script.cards.length : 0) + (script?.outro ? 1 : 0);
+}
+
+// ── 프롬프트 ─────────────────────────────────────────────────────────────────
+
+/**
+ * 카드 역할표 — 자리마다 **다른 일**을 시킨다.
+ *
+ * 🔴 이전 지시는 "본문 5장은 한 장에 새 정보 하나, 앞 장을 되풀이하지 마라"였고, 그게
+ * "카드가 다 비슷하다"의 직접 원인이었다. 그 문장은 **병렬 나열을 명령한다** — 병렬 나열에서
+ * 모든 카드는 자기완결적이고, 자기완결적이면 7번째 카드로 넘길 이유가 없다. 캐러셀 배포는
+ * 스와이프 완주율에 걸려 있으므로, 넘길 이유가 없다는 건 도달이 없다는 뜻이다.
+ *
+ * 역할을 나누면 자극과 유용함이 같은 자리를 두고 싸우지도 않는다(앞은 자극, 가운데는 유용).
+ * 번호는 **전체 카드 기준**이다: 1=표지, 2..N+1=본문, N+2=마무리.
+ */
+export function cardRoles(n = BODY_CARDS) {
+  const last = n + 2;              // 마무리 카드 번호
+  const twistCard = n + 1;         // 마지막 본문 = 반전·이유
+  const usefulFrom = 3;            // 표지(1)+본문1(2) 다음
+  const usefulTo = twistCard - 1;
+  const useful = usefulFrom > usefulTo ? `${usefulFrom}번 카드` : `${usefulFrom}~${usefulTo}번 카드`;
+  return `[카드 역할 — 자리마다 하는 일이 다르다. 같은 일을 두 장에 시키지 마라]
+- **1~2번 카드(표지 + 본문 첫 장) = 자극.** 셋 중 하나를 골라라: ①루프를 연다(답을 아직 주지 마라)
+  ②모르면 치르는 대가를 앞세운다 ③읽는 사람 자신의 짐작을 깬다(아래 "흔한 오해"를 그대로 써먹어라).
+  여기서 답을 다 말해버리면 나머지를 넘길 이유가 사라진다.
+- **${useful}(본문 가운데) = 유용.** 답을 한 겹씩 벗긴다. "실제로 벌어지는 일"과 구체적인 행동 지침이 여기 산다.
+  한 장에 한 겹 — 다음 장이 앞 장의 답을 이어받아야지, 나란히 놓인 별개 항목이면 안 된다.
+- **${twistCard}번 카드(마지막 본문) = 반전 또는 이유.** 왜 실제로 그런가. 원인은 반드시 역사·법·기후·제도다.
+  국민성·천성으로 돌리면 게이트가 차단하고, 애초에 그쪽이 훨씬 재미없다.
+- **${last}번 카드(마무리) = 지목 + 저장 CTA.** 누구를 위한 글인지 이름을 불러라("다음 주 오사카 가는 사람",
+  "독일 집들이 초대받은 사람"). 한국 인스타에서 공유는 대부분 1:1 DM 전달이고, 전달하려면 **보낼 사람이 지목돼야** 한다.
+  그리고 **저장**을 명시적으로 요청하라.`;
+}
+
+/**
+ * 문형 대조표 — `gate-generalization.mjs --line` 으로 실측한 것만 싣는다(2026-07-31).
+ *
+ * 왼쪽 5문형은 전부 게이트 PASS 다. 즉 **헤징은 필요 없다** — 필요한 것은 주어를 사람의
+ * 집단이 아니라 **장소**로 잡는 것뿐이고, 그렇게만 하면 단정적으로 써도 통과한다.
+ * ⚠ 오른쪽이 전부 게이트에 걸리는 것은 아니다(아래 buildScriptPrompt 주석 참조) — 그래서
+ * 이 표가 게이트의 사본이 아니라 **게이트보다 넓은 규칙**으로 여기 있는 것이다.
+ */
+export const SENTENCE_TABLE = `[문형 — 왼쪽으로만 써라]
+| 써도 되는 문형 | 쓰면 안 되는 문형 |
+|---|---|
+| 일본에서는 국수 먹는 소리를 무례로 보지 않는다. | 일본 사람들은 다 국수 먹을 때 소리를 낸다. |
+| 미국 식당에서는 팁이 관행으로 작동한다. | 미국인들은 팁을 당연하게 여긴다. |
+| 독일에서는 약속 시간 지각이 바로 비매너로 읽힌다. | 독일 사람들은 다 시간에 엄격하다. |
+| [장소]에서는 [행동]이 예의가 아니다. | [국가] 사람들은 원래 [성향]이다. |
+| [장면]에서는 [행동]이 호의보다 실례로 읽힌다. | [집단]은 항상 [가치]를 중요하게 생각한다. |
+
+왼쪽은 전부 단정적이다. **약하게 쓰라는 뜻이 아니다** — 주어를 사람의 집단이 아니라 장소·장면으로
+잡으라는 뜻이다. 그렇게 잡으면 세게 써도 된다.`;
+
+/**
+ * 후퇴성 헤징 금지 — 이 문구들은 모든 게이트를 통과하면서 읽는 경험만 죽인다.
+ * 게이트가 못 잡는 종류의 실패라서 프롬프트에서 이름을 불러 막는 수밖에 없다.
+ */
+export const HEDGE_BAN = `[후퇴하지 마라 — 아래 표현은 금지]
+"문화마다 다르다", "상황에 따라 다르다", "정답은 없다", "참고하면 좋다".
+이 문장들은 어떤 게이트에도 걸리지 않으면서 카드를 아무 말도 하지 않은 것으로 만든다.
+범위를 좁힐 필요가 있으면 두루뭉술하게 물러나지 말고 **정확히** 좁혀라("오사카 일부 노포에서는").`;
+
+/** 표지 문구 패턴 5종 — 전부 게이트 PASS·24자 이내로 실측 확인된 것. */
+export const COVER_PATTERNS = `[표지 headline — 아래 5가지 중에서 골라 써라(전부 검증된 형태)]
+1. \`여기선 [행동]이 예의가 아니다\`      예) 일본에선 조용히 먹는 게 더 어색하다
+2. \`[장소]에선 [익숙한 행동]이 오히려 실수다\`  예) 일본에선 전철 통화가 오히려 민폐다
+3. \`[장소] 가기 전 이것만은\`             예) 미국 식당 가기 전 팁 계산부터 익혀야 한다
+4. \`한국에선 괜찮지만 [장소]에선 다르게 읽힌다\` 예) 한국에선 선택이지만 미국에선 기본값이다
+5. \`[장소]에서 바로 티 나는 실수\`         예) 일본에서 바로 티 나는 식당 실수 3개`;
+
+export function buildScriptPrompt(item, cfg = {}, hint = '') {
+  const maxH = cfg?.cards?.headline_max_chars ?? 24;
+  const maxB = cfg?.cards?.body_max_chars ?? 90;
+  const n = bodyCardCount(cfg);
+  const total = n + 2;
+  // 스테이크 3필드는 **구 재고에 없다** — 그때는 줄을 통째로 빼서, 없는 것을 지어내라고
+  // 요구하지 않는다(빈 라벨을 보여주면 모델은 그 칸을 채우려고 한다).
+  const stake = (label, v) => (String(v || '').trim() ? `${label}: ${String(v).trim()}\n` : '');
+  return withBrief('flamingo', `아래 검증된 소재로 인스타 카드뉴스 대본을 만들어라.
+
+주제: ${item?.subject ?? ''}
+나라: ${item?.country ?? ''}
+도메인: ${item?.domain ?? ''}
+그 나라의 관습: ${item?.common_practice ?? ''}
+우리와 갈리는 지점: ${item?.contrast ?? ''}
+${stake('모르면 벌어지는 일', item?.consequence)}${stake('맞닥뜨리는 장면', item?.trigger_situation)}${stake('한국에서 흔한 오해', item?.misconception)}근거: ${item?.source_hint || '(없음)'}
+
+[이 글의 목적 — **저장**]
+사람이 카드뉴스를 저장하는 이유는 셋뿐이다: ①나중에 실제로 쓸 것 ②남에게 옮길 대화 소재
+③실수를 피하는 체크리스트. 이 대본은 그중 최소 하나를 분명히 만족해야 한다.
+다 읽고도 저장할 이유가 없으면, 문장이 아무리 매끄러워도 실패한 대본이다.
+
+[구조 — 고정]
+표지 1장 + 본문 ${n}장 + 마무리 1장 = 정확히 ${total}장. 늘리거나 줄이지 마라.
+
+${cardRoles(n)}
+
+[글자수 — 초과하면 렌더에서 잘린다]
+- 모든 headline: ${maxH}자 이내
+- 모든 body: ${maxB}자 이내
+- cover.sub: 34자 이내
+
+${COVER_PATTERNS}
+
+${SENTENCE_TABLE}
+
+${HEDGE_BAN}
+
+[문구 규칙]
+- **우열 비교·일반화·비하 금지, 사실 기술만.** 주어는 장소·제도·상황이지 사람의 집단이 아니다.
+- 전칭 부사(다·모두·전부·항상·원래·하나같이), 본질화 어휘(국민성·민족성·천성·유전자·타고나기를), 나라 간 우열 표현 금지.
+- 캡션 hook 은 더보기 전에 보이는 첫 두 줄이다. 해시태그는 주제와 실제로 관련된 것만.
+- 캡션 cta 에도 **저장**을 요청하라.
+${hint ? `\n${hint}\n` : ''}
+[출력] JSON 객체만:
+{ "cover": { "headline": "…", "sub": "…", "country": "${item?.country ?? ''}", "flag_emoji": "🇯🇵" },
+  "cards": [ { "index": 1, "headline": "…", "body": "…" }, … 정확히 ${n}개 ],
+  "outro": { "headline": "…", "body": "…" },
+  "caption_sections": { "hook": "…", "body": "…", "cta": "…" },
+  "hashtags": ["#세계문화", "…"] }
+설명 없이 JSON 만.`);
+}
+
+// ── 생성 ─────────────────────────────────────────────────────────────────────
+
+/**
+ * 검증을 통과하는 대본을 확보한다 — 생성기를 주입받는 순수 제어 로직(테스트 가능).
+ *
+ * ①통과하면 즉시 채택 ②위반이면 **위반 목록을 힌트로 붙여** 재생성 ③시도를 다 쓰면 throw.
+ * 호기심 채널과 달리 폴백 채택(초과분 그대로 통과)이 없다: 영상 길이는 조금 넘어도 나가지만,
+ * 카드 글자수 초과는 이미지에서 **잘려 보이므로** 발행 공백보다 나쁘다.
+ */
+export function resolveScript({ generate, cfg, attempts = 3, logger = log }) {
+  const max = Math.max(1, Number(attempts) || 1);
+  let lastErr = null, hint = '', last = null;
+  for (let i = 1; i <= max; i++) {
+    let cand;
+    try { cand = generate(hint); }
+    catch (e) { lastErr = e; logger.warn(`대본 생성 시도 ${i}/${max} 실패: ${e.message}`); if (e.budget) throw e; continue; }
+    const chk = validateScript(cand, cfg);
+    if (chk.ok) {
+      logger.info(`대본 검증 통과(시도 ${i}/${max}) — 카드 ${cardCount(cand)}장`);
+      return { script: cand, attempts_used: i };
+    }
+    last = chk;
+    logger.warn(`대본 검증 실패(시도 ${i}/${max}): ${chk.violations.join(' · ')}`);
+    hint = `⚠ 직전 시도는 다음을 어겼다. 이번엔 반드시 고쳐라:\n- ${chk.violations.join('\n- ')}`;
+  }
+  const why = last ? last.violations.join(' · ') : (lastErr?.message || '알 수 없음');
+  const err = new Error(`대본 생성 실패(${max}회 시도): ${why}`);
+  err.violations = last?.violations || [];
+  throw err;
+}
+
+/**
+ * 소재 1건 → 대본. `postId` 를 주면 `work/{post_id}/script.json` 에 저장한다.
+ * (저장 경로가 attemptId 없는 포스트 루트인 이유: 재시도마다 슬라이드는 갈리지만 대본은
+ * 갈리지 않는다 — `lib.mjs:workDir` 주석 참조.)
+ */
+export function generateScript(item, { cfg = null, deps = {}, postId = null, attempts = 3 } = {}) {
+  const conf = cfg || loadConfig();
+  const call = deps.callClaude || callClaude;
+  const { script, attempts_used } = resolveScript({
+    cfg: conf, attempts,
+    generate: (hint) => extractJson(call(buildScriptPrompt(item, conf, hint), { cfg: conf })),
+  });
+
+  const out = { post_id: postId ?? null, ...script };
+  if (postId) {
+    const dir = workDir(postId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'script.json'), JSON.stringify(out, null, 2) + '\n', 'utf8');
+  }
+  return { script: out, attempts_used };
+}
+
+// ── provenance 영속화 (§5.1 · scripted 전이) ─────────────────────────────────
+
+/**
+ * `planned → scripted` 전이 + provenance 기록.
+ *
+ * 🔴 `factcheck_source`·`factcheck_note`·`source_hint` 를 여기서 남기지 않으면, 나중에
+ * 테이크다운 런북(R16)이 운영자에게 건네는 것은 "발행된 게시물"뿐이고 "왜 이 주장을
+ * 믿었는가"의 기록은 어디에도 없다. 발행 시점이 아니라 **대본 시점**에 남기는 이유:
+ * 발행까지 못 간 held 포스트도 같은 질문을 받을 수 있다.
+ */
+export function persistScripted(postId, { item, script, factcheck = {}, extra = {} } = {}) {
+  return transition(postId, 'scripted', {
+    backlog_id: item?.id ?? null,
+    subject: item?.subject ?? null,
+    country: item?.country ?? null,
+    domain: item?.domain ?? null,
+    // 🔴 회전축. `freshnessMap` 이 인덱스에서 이 값을 읽는다 — 없으면 백로그 역참조로만
+    //    복원되고, 백로그가 정리되는 날 회전이 조용히 멈춘다.
+    trigger_situation: item?.trigger_situation ?? null,
+    provenance: {
+      source_hint: item?.source_hint ?? null,
+      factcheck_verdict: factcheck?.verdict ?? null,
+      factcheck_source: factcheck?.source ?? null,
+      factcheck_note: factcheck?.note ?? null,
+      factcheck_corrected: Boolean(item?.factcheck_corrected),
+    },
+    ...extra,
+  });
+}
+
+// ── 예비 대본 buffer (§3.6) ──────────────────────────────────────────────────
+//
+// 목표 5건. `≤2` 로 두면 07-25/26 사고 길이(2일)와 정확히 같아 여유가 0이다 — 이틀 연속
+// claude 장애가 나면 버퍼가 정확히 그 이틀에 소진되고 사흘째가 결방이다.
+
+const bufferFile = (backlogId) => join(bufferDir(), `${String(backlogId).replace(/[^A-Za-z0-9_-]/g, '')}.json`);
+
+/**
+ * 적립. **자격: 팩트체크 `ok` + TIER-1 게이트 통과분만.**
+ * 검증 안 된 대본을 쌓아 두면 장애일에 꺼내 쓰는 순간, 하필 사람이 못 보는 날에
+ * 검증되지 않은 것이 나간다 — 버퍼가 안전망이 아니라 우회로가 된다.
+ */
+export function bankToBuffer({ backlogId, script, provenance = null, tier2Warnings = [], factcheckVerdict, gatePass, now = new Date() } = {}) {
+  if (factcheckVerdict !== 'ok') return { banked: false, reason: `factcheck:${factcheckVerdict ?? 'missing'}` };
+  if (gatePass !== true) return { banked: false, reason: 'gate:generalization' };
+  if (!backlogId || !script) return { banked: false, reason: 'missing-input' };
+
+  mkdirSync(bufferDir(), { recursive: true });
+  const row = {
+    backlog_id: backlogId, script, provenance,
+    tier2_warnings: Array.isArray(tier2Warnings) ? tier2Warnings : [],
+    banked_at: now.toISOString(),
+  };
+  writeFileSync(bufferFile(backlogId), JSON.stringify(row, null, 2) + '\n', 'utf8');
+  return { banked: true, reason: 'ok', path: bufferFile(backlogId), row };
+}
+
+/** 버퍼 전체 로드(오래된 것 먼저 — FIFO). 깨진 파일은 무시한다. */
+export function loadBuffer() {
+  const dir = bufferDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter(f => f.endsWith('.json'))
+    .map(f => { try { return JSON.parse(readFileSync(join(dir, f), 'utf8')); } catch { return null; } })
+    .filter(Boolean)
+    .sort((a, b) => String(a.banked_at).localeCompare(String(b.banked_at)));
+}
+
+export function bufferCount() { return loadBuffer().length; }
+
+/** 가장 오래된 1건 소비(파일 제거). 없으면 null. */
+export function takeFromBuffer() {
+  const all = loadBuffer();
+  const first = all[0];
+  if (!first) return null;
+  try { unlinkSync(bufferFile(first.backlog_id)); } catch { /* 이미 없으면 무시 */ }
+  return first;
+}
+
+/**
+ * refill-to-target — 부족분을 `max_topup_per_run` 까지만 채운다.
+ *
+ * 🔴 **발행 성공 *후*** 에 호출하고, claude 호출은 `exempt:true` 로 건다. 여기서 예산 초과로
+ * throw 하면 **이미 나간 그날이 실패로 기록되고 결방 경보가 오발한다.** 다만 `charge()` 는
+ * 정상 수행되므로(면제는 throw 뿐) 공유 원장에 과소보고되지 않는다(F4).
+ *
+ * @param {function} produce `() => {backlogId, script, provenance, tier2Warnings, factcheckVerdict, gatePass}`
+ */
+export function topUpBuffer({ cfg = null, produce, now = new Date() } = {}) {
+  const conf = cfg || loadConfig();
+  const target = conf.buffer?.target ?? 5;
+  const maxPerRun = conf.buffer?.max_topup_per_run ?? 2;
+  const have = bufferCount();
+  const want = Math.min(Math.max(0, target - have), maxPerRun);
+  const banked = [];
+  const skipped = [];
+
+  for (let i = 0; i < want; i++) {
+    let made;
+    try { made = produce(); }
+    catch (e) {
+      // top-up 실패는 절대 런을 죽이지 않는다 — 발행은 이미 끝났다.
+      log.warn(`buffer top-up 중단(비차단): ${e.message}`);
+      break;
+    }
+    if (!made) break;
+    const r = bankToBuffer({ ...made, now });
+    if (r.banked) banked.push(r.row.backlog_id); else skipped.push(r.reason);
+  }
+
+  log.info(`buffer: ${have} → ${bufferCount()} (목표 ${target} · 이번 런 최대 ${maxPerRun} · 적립 ${banked.length}${skipped.length ? ` · 자격미달 ${skipped.length}` : ''})`);
+  return { before: have, after: bufferCount(), target, max_per_run: maxPerRun, banked, skipped };
+}
+
+function main() {
+  try {
+    const raw = process.argv[2];
+    if (!raw) { process.stderr.write('사용법: script.mjs \'<BacklogItem JSON>\' [post_id]\n'); process.exit(2); }
+    const item = JSON.parse(raw);
+    const r = generateScript(item, { postId: process.argv[3] || null });
+    process.stdout.write(JSON.stringify({ ok: true, attempts_used: r.attempts_used, script: r.script }) + '\n');
+    process.exit(0);
+  } catch (e) {
+    log.error(`대본 생성 실패: ${e.message}`);
+    process.stdout.write(JSON.stringify({ ok: false, error: e.message, diag: e.diag || null }) + '\n');
+    process.exit(2);
+  }
+}
+
+if (isMainModule(import.meta.url)) main();

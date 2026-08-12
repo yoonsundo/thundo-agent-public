@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "comment": "검색 수요 키워드 폐루프 — 네이버 데이터랩(공식)으로 후보 키워드의 상대 검색량을 재고, 수요×기회 점수 상위를 apply-targeting 이 niche_keywords 로 병합한다. 스크래핑·비공식 엔드포인트 절대 금지.",
+  "anchor_keyword": "ai 코딩",
+  "anchor_comment": "배치 간 정규화 앵커 — 전 배치에 같이 넣어 이 키워드 대비 배율로 점수화한다. 니치 중간 볼륨 키워드가 적합(너무 크면 나머지가 전부 0에 붙는다).",
+  "lookback_days": 90,
+  "time_unit": "week",
+  "max_candidates": 60,
+  "max_report_rows": 30,
+  "min_demand_score": 0.05,
+  "candidates_ttl_days": 21,
+  "ttl_comment": "candidates.json 이 이 일수보다 오래되면 apply-targeting 이 무시한다 — 주간 잡이 죽었을 때 낡은 수요로 계속 병합되는 것을 막는다.",
+  "apply": {
+    "max_new_per_run": 5,
+    "weight_tiers": [
+      { "min_score": 1.0, "weight": 3 },
+      { "min_score": 0.3, "weight": 2 },
+      { "min_score": 0.0, "weight": 1 }
+    ]
+  },
+  "searchad": {
+    "enabled": true,
+    "related_cap": 15,
+    "comment": "네이버 검색광고 키워드도구(절대 월간 검색량·연관키워드) — 주 수요 소스(2026-08-07 활성화, 데이터랩은 개발자센터 신규등록 차단으로 폴백 전용). env: NAVER_SEARCHAD_API_KEY / NAVER_SEARCHAD_SECRET / NAVER_SEARCHAD_CUSTOMER_ID"
+  }
+}

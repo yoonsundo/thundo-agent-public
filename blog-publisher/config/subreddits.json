@@ -1,0 +1,13 @@
+{
+  "schema": "subreddits/v1",
+  "method": "public-json-unauth",
+  "subreddits": [
+    { "name": "ClaudeAI", "endpoint": "hot", "limit": 25 },
+    { "name": "OpenAI", "endpoint": "hot", "limit": 25 },
+    { "name": "ChatGPT", "endpoint": "top", "t": "day", "limit": 25 },
+    { "name": "algotrading", "endpoint": "hot", "limit": 25 },
+    { "name": "quant", "endpoint": "top", "t": "week", "limit": 15 }
+  ],
+  "backoff": { "base_ms": 2000, "max_ms": 60000, "retries": 3 },
+  "republish_principle": "소재일 뿐. 충분 변형 + 내 분석/관점 + 원본 출처 표기. 단순 번역/요약 금지."
+}

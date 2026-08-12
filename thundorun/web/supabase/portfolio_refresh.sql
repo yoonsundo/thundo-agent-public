@@ -1,0 +1,191 @@
+-- portfolio_refresh.sql
+-- 경력기술서 기준 홈페이지 프로필/프로젝트 데이터를 실제 DB에 반영하는 upsert 스크립트.
+-- 사용 순서:
+-- 1) site_profile.sql, projects.sql 이 먼저 적용돼 있어야 한다.
+-- 2) Supabase SQL Editor 에서 이 파일 전체를 실행한다.
+-- 3) 기존 프로젝트를 이번 포트폴리오 5건으로 정리하고 싶으면 맨 아래 optional delete 를 함께 실행한다.
+
+insert into public.site_profile (id, data, updated_at)
+values (
+  1,
+  '{
+    "name": "Thundo",
+    "handle": "thundo",
+    "title": "백엔드 개발자 · AI 데이터 플랫폼 엔지니어",
+    "bio": "Java/Spring 기반 엔터프라이즈 업무 시스템과 Python/FastAPI 기반 AI 데이터 플랫폼을 함께 구축해 왔습니다. RAG, Elasticsearch, 대규모 크롤링, 분석 API, LLM 보고서 자동화, AWS 배포·운영까지 실서비스 기준으로 설계하고 안정화한 경험을 포트폴리오에 정리했습니다.",
+    "avatar": "/profile.png",
+    "location": "Seoul, KR",
+    "available": true,
+    "skills": ["Java", "Spring Framework", "Python", "FastAPI", "Elasticsearch", "PostgreSQL", "Oracle", "AWS", "Docker", "GitLab CI/CD", "RAG", "LangGraph"],
+    "socials": [
+      { "label": "GitHub", "href": "https://github.com/", "icon": "github" },
+      { "label": "Email", "href": "mailto:contact@example.com", "icon": "mail" },
+      { "label": "블로그", "href": "/blog", "icon": "blog" }
+    ]
+  }'::jsonb,
+  now()
+)
+on conflict (id) do update
+set data = excluded.data,
+    updated_at = excluded.updated_at;
+
+insert into public.projects
+  (id, title, period, role, stack, description, highlights, link, sort_order, updated_at)
+values
+  (
+    'ai-rag-platform',
+    'AI 연구소 RAG 시스템 · 데이터 수집 플랫폼',
+    '2024.06 ~ 현재',
+    'Elasticsearch 인프라 구축 · 크롤링 파이프라인 설계 · FastAPI 분석 API 개발',
+    '["Python","FastAPI","Elasticsearch 7.x/8.x","PostgreSQL","AWS ECS","AWS S3","Docker","LangGraph"]'::jsonb,
+    'AI 연구소용 RAG 시스템과 실시간 데이터 수집 플랫폼을 구축·운영했습니다. 검색 인프라를 직접 세팅하고, 수집·전처리·임베딩·검색·분석 API까지 이어지는 전체 파이프라인을 실서비스 기준으로 설계했습니다.',
+    '[
+      "build: Elasticsearch 클러스터를 직접 구축하고 벡터 검색용 인덱스 운영 구조를 설계했습니다.",
+      "build: 6개 채널 실시간 크롤링, 중복 탐지, 한국어 전처리, 임베딩 적재 파이프라인을 연결했습니다.",
+      "build: S3 · PostgreSQL · Elasticsearch를 분리해 저장하는 3계층 데이터 구조와 ECS 실행 구조를 구성했습니다.",
+      "note: 중복 판별은 Trigram 역인덱스 후보 선별 + SequenceMatcher 정밀 비교의 2단계 방식으로 설계했습니다.",
+      "note: 한국어 데이터 품질을 위해 PyKoSpacing, KoNLPy, 자체 불용어 사전을 함께 사용했습니다.",
+      "note: 운영은 EC2, ECS, ECR, S3, CloudWatch를 조합해 크롤링과 검색 인프라를 분리했습니다."
+    ]'::jsonb,
+    null,
+    10,
+    now()
+  ),
+  (
+    'multi-agent-chat-analytics',
+    'LangGraph 기반 멀티 AI에이전트 챗봇 구축',
+    '2024 ~ 현재',
+    'Vue 3 프론트엔드 · FastAPI 백엔드 · 시각화/리포트 워크플로우 개발',
+    '["Vue 3","FastAPI","Chart.js","LangGraph","AWS Lambda","AWS ECS Fargate","Tailwind CSS"]'::jsonb,
+    '질문형 분석 웹 애플리케이션에서 멀티 AI 에이전트 응답, 시각화 대시보드, 자동 리포트 생성 기능을 개발했습니다. 프론트 SPA와 백엔드 API, 비동기 리포트 파이프라인을 하나의 사용자 흐름으로 연결했습니다.',
+    '[
+      "build: LangGraph 기반 멀티 AI 에이전트 구조를 설계하고 질의 유형별 역할 분담 흐름을 구현했습니다.",
+      "build: Vue 3 SPA와 FastAPI API 서버를 연결해 차트, 워드클라우드, 리포트 생성 화면을 통합했습니다.",
+      "build: S3 업로드 이후 Lambda와 Elasticsearch로 이어지는 자동 임베딩 파이프라인을 구성했습니다.",
+      "note: 응답 타입은 텍스트, Markdown, JSON, 차트, 워드클라우드, 이미지 6종으로 분기 처리했습니다.",
+      "note: Chart.js 기반 대시보드로 채널별 트렌드와 날짜 범위 필터를 제공했습니다.",
+      "note: 리포트 생성은 ECS Fargate와 Lambda를 조합해 비동기 작업으로 분리했습니다."
+    ]'::jsonb,
+    null,
+    20,
+    now()
+  ),
+  (
+    'llm-report-automation',
+    'LLM 기반 데이터 분석 보고서 자동 생성 시스템',
+    '2024 ~ 현재',
+    '대용량 보고서 생성 엔진 · 멀티 LLM 추상화 · Word 변환기 개발',
+    '["Python 3.11","Claude API","OpenAI API","PostgreSQL","AWS ECS","Docker","python-docx","Matplotlib"]'::jsonb,
+    '10,000건 이상 데이터를 샘플링 없이 전수 분석해 다수 페이지 분량의 보고서를 자동 생성하는 시스템을 설계·개발했습니다. 장시간 분석 작업을 메인 서버에서 분리하고, Markdown/Word 동시 출력까지 자동화했습니다.',
+    '[
+      "build: 10,000건 이상 데이터를 전수 분석해 13개 섹션 보고서를 생성하는 백그라운드 엔진을 구축했습니다.",
+      "build: Claude와 GPT 계열을 교체 가능하게 연결한 멀티 LLM 추상화 계층을 설계했습니다.",
+      "build: Markdown 결과를 Word 문서로 자동 변환하고 차트를 삽입하는 변환기를 자체 구현했습니다.",
+      "note: 보고서 생성 상태는 PostgreSQL 폴링 패턴으로 추적해 진행률을 실시간으로 표시했습니다.",
+      "note: 처리 시간은 ECS 비동기 작업으로 분리해 메인 서버 부하와 충돌하지 않게 설계했습니다.",
+      "note: 출력 포맷은 Markdown과 DOCX를 동시에 지원하도록 구성했습니다."
+    ]'::jsonb,
+    null,
+    30,
+    now()
+  ),
+  (
+    'tmoney-monitoring',
+    '티머니 공공기관 모니터링 시스템',
+    '2024',
+    '크롤링 자동화 · Streamlit 대시보드 · 실시간 알림 파이프라인 개발',
+    '["Python","Streamlit","PostgreSQL","AWS ECS","EventBridge","Docker"]'::jsonb,
+    '서울시의회, 서울시, 국토부, 금융위 등 공공기관 사이트를 모니터링하는 데이터 수집 및 대시보드 시스템을 구축했습니다. 신규 게시물 감지부터 이메일 알림, 스케줄링, 운영 자동화까지 전체 흐름을 맡았습니다.',
+    '[
+      "build: 5개 공공기관 사이트 크롤링과 PostgreSQL 적재 파이프라인을 설계했습니다.",
+      "build: Streamlit 기반으로 기관별 게시물 목록과 통계를 보는 모니터링 대시보드를 만들었습니다.",
+      "build: 신규 게시물 등록 시 이메일 알림이 발송되도록 자동화 흐름을 연결했습니다.",
+      "note: 실행 환경은 ECR, ECS, EventBridge를 조합해 정기 수집 구조로 운영했습니다.",
+      "note: 데이터 저장과 조회를 분리해 수집 파이프라인과 대시보드가 서로 간섭하지 않게 구성했습니다.",
+      "note: 운영자는 기관별 게시물 변화와 통계를 한 화면에서 확인할 수 있게 했습니다."
+    ]'::jsonb,
+    null,
+    40,
+    now()
+  ),
+  (
+    'incheon-university-information-system',
+    '인천대학교 통합정보시스템',
+    '2019.05 ~ 2024.05',
+    '행정 시스템 백엔드 개발 · Oracle 최적화 · 운영/보안/배포',
+    '["Java","Spring Framework","Oracle","SVN","JSP","Sparrow"]'::jsonb,
+    '인천대학교 통합정보시스템에서 Java/Spring과 Oracle을 기반으로 예산·회계·구매·자산·시설·총무 행정 업무를 개발·운영했습니다. 기존 업무 규칙과 운영 안정성을 지키며 신규 기능을 추가하고, 사용자 이슈 재현·수정·배포부터 보안 패치와 배포 관리까지 담당했습니다.',
+    '[
+      "build: 예산·회계·구매·자산·시설·총무 업무의 복잡한 규칙을 Java/Spring 기반 백엔드로 구현했습니다.",
+      "build: 기존 업무 규칙을 보존하면서 신규 기능을 추가하고 운영 안정성을 유지했습니다.",
+      "build: Oracle 쿼리 최적화와 트리거·스토어드 프로시저 적용으로 데이터베이스 업무 로직을 관리했습니다.",
+      "build: 헬프데스크와 사용자 이슈를 재현하고 원인을 수정한 뒤 운영 환경에 배포했습니다.",
+      "note: 보안 점검 대응과 취약점 패치를 수행했습니다.",
+      "note: 장기 운영 환경의 배포 프로세스를 관리했습니다."
+    ]'::jsonb,
+    null,
+    50,
+    now()
+  ),
+  (
+    'chungcheong-university-information-system',
+    '충청대학교 통합정보시스템',
+    '',
+    'Java/Spring/Oracle 기반 학사·부속 시스템 개발',
+    '["Java","Spring Framework","Oracle","SVN","JSP"]'::jsonb,
+    '충청대학교 통합정보시스템에서 학사·부속 시스템 업무 로직을 구현하고 시스템 전환 작업을 수행했습니다.',
+    '[
+      "build: 학사·부속 시스템의 업무 흐름을 Java/Spring Framework 기반 로직으로 구현했습니다.",
+      "build: Oracle을 사용하는 통합정보시스템의 전환 작업을 수행했습니다.",
+      "note: SVN과 JSP를 사용하는 개발 환경에서 작업했습니다."
+    ]'::jsonb,
+    null,
+    60,
+    now()
+  ),
+  (
+    'duksung-womens-university-information-system',
+    '덕성여자대학교 통합정보시스템',
+    '',
+    'Java/Spring/Oracle 기반 학사·부속 시스템 개발',
+    '["Java","Spring Framework","Oracle","SVN","JSP"]'::jsonb,
+    '덕성여자대학교 통합정보시스템의 학사·부속 시스템에서 업무 로직 구현과 시스템 전환 작업을 수행했습니다.',
+    '[
+      "build: 학사·부속 시스템에 필요한 업무 로직을 Java와 Spring Framework로 구현했습니다.",
+      "build: Oracle 기반 통합정보시스템의 전환 작업에 참여했습니다.",
+      "note: SVN과 JSP 기반 개발 환경을 사용했습니다."
+    ]'::jsonb,
+    null,
+    70,
+    now()
+  ),
+  (
+    'jangan-university-information-system',
+    '장안대학교 통합정보시스템',
+    '',
+    'Java/Spring/Oracle 기반 학사·부속 시스템 개발',
+    '["Java","Spring Framework","Oracle","SVN","JSP"]'::jsonb,
+    '장안대학교 통합정보시스템 프로젝트에서 학사·부속 시스템 업무 로직을 구현하고 시스템 전환 작업에 참여했습니다.',
+    '[
+      "build: Java와 Spring Framework를 사용해 학사·부속 시스템 업무 로직을 구현했습니다.",
+      "build: Oracle 기반 시스템 전환 작업을 수행했습니다.",
+      "note: SVN과 JSP를 사용하는 프로젝트 환경에서 작업했습니다."
+    ]'::jsonb,
+    null,
+    80,
+    now()
+  )
+on conflict (id) do update
+set title = excluded.title,
+    period = excluded.period,
+    role = excluded.role,
+    stack = excluded.stack,
+    description = excluded.description,
+    highlights = excluded.highlights,
+    link = excluded.link,
+    sort_order = excluded.sort_order,
+    updated_at = excluded.updated_at;
+
+-- 대학 통합정보시스템 프로젝트를 대학별 항목으로 분리했으므로 기존 합산 항목은 제거한다.
+delete from public.projects
+where id = 'university-enterprise-backend';

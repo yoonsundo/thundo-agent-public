@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+/**
+ * cardnews-backlog.test.mjs — Camel 🐫 소재 백로그 유닛테스트 (계획 §3.3 · Step 5)
+ *
+ * 증명하는 것:
+ *   ① 프롬프트가 **camel BRIEF 로 시작**한다(AC-17) + 가드레일 문구가 실린다
+ *   ② `ingest` 정규화 — 필수 필드 결손 폐기 · subject sha1 dedup · 스키마 7필드
+ *   ③ `idOf` 결정론(같은 subject → 같은 id) — post_id 의 꼬리이므로 형식 계약이다
+ *   ④ append 가 실제 JSONL 에 쓰이고 `loadBacklog` 로 되읽힌다
+ *   ⑤ 예산 카운터가 계상되고 상한 초과 시 throw(exempt 는 계상하되 throw 하지 않는다)
+ *   ⑥ claude 실패가 `classifyFailure` 를 타고 `err.diag` 로 나온다(분류기 1개)
+ *
+ * 🔴 **실 `claude -p` 를 절대 호출하지 않는다.** 이 레포는 CLI 다일 장애 이력이 문서화돼
+ * 있고(R9 · 2026-07-25/26 6슬롯 전멸), 거기에 테스트를 걸면 무관한 이유로 빨개진다.
+ * 주입점은 `deps.callClaude`(스텁) 와 `lib.callClaude({exec})`(가짜 exec) 두 층이다.
+ *
+ * 네트워크·크리덴셜 불필요. exit 0 = 전체 통과 / 1 = 실패.
+ */
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const TMP = mkdtempSync(join(tmpdir(), 'cardnews-backlog-'));
+process.env.STATE_DIR_OVERRIDE = TMP;   // 실 state/ 격리 — 반드시 import 전
+process.env.RUN_MODE = 'mock';
+
+const lib = await import('../cardnews/lib.mjs');
+const bk = await import('../cardnews/backlog.mjs');
+
+let passN = 0, failN = 0;
+const ok = (label, cond, extra = '') => {
+  if (cond) { console.log(`  [PASS] ${label}`); passN++; }
+  else { console.log(`  [FAIL] ${label}${extra ? ` — ${extra}` : ''}`); failN++; }
+};
+const eq = (label, got, want) => ok(label, got === want, `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`);
+const section = (s) => console.log(`\n${s}`);
+
+const CFG = lib.loadConfig();
+const GUARD = '우열 비교·일반화·비하 금지, 사실 기술만';
+
+const item = (subject, over = {}) => ({
+  subject, country: '일본', domain: '식사예절',
+  common_practice: '밥그릇을 손에 들고 먹는다',
+  contrast: '한국에서는 상에 두고 먹는다',
+  // 🔴 스테이크 3필드 — 2026-07-31 부터 필수. "저장할 이유"를 소재 자체가 들고 있어야 한다.
+  consequence: '상에 두고 먹으면 개처럼 먹는다는 인상을 준다',
+  trigger_situation: '오사카 이자카야에서 정식을 처음 주문할 때',
+  misconception: '한국처럼 그릇을 두고 먹는 게 예의라고 생각한다',
+  source_hint: '일본 정부 관광국 예절 안내', ...over,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('① 프롬프트 — BRIEF 선두 주입 + 가드레일');
+
+const brief = lib.loadAgentBrief('camel');
+ok('camel BRIEF 가 비어있지 않다', brief.length > 100, `len=${brief.length}`);
+
+const prompt = bk.buildBacklogPrompt(CFG, ['기존 주제 A'], 10);
+ok('프롬프트가 camel BRIEF 로 시작한다', prompt.startsWith(brief), `head='${prompt.slice(0, 40)}…'`);
+ok('프롬프트에 가드레일 문구가 실린다', prompt.includes(GUARD));
+ok('프롬프트가 기존 주제를 중복 회피용으로 싣는다', prompt.includes('기존 주제 A'));
+ok('프롬프트가 도메인 목록을 싣는다', CFG.channel.domains.every(d => prompt.includes(d)));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('② ingest 정규화 · dedup');
+
+const payload = JSON.stringify([
+  item('일본에서는 밥그릇을 들고 먹는다'),
+  item('일본에서는 밥그릇을 들고 먹는다'),              // 완전 중복 → 1건만
+  { subject: '나라 없음', domain: '교통', contrast: 'x' }, // country 결손 → 폐기
+  { subject: '', country: '태국', contrast: 'y' },        // subject 빈값 → 폐기
+  item('태국에서는 아이 머리를 쓰다듬지 않는다', { country: '태국' }),
+  'not-an-object',
+]);
+const seen = new Set();
+const got = bk.ingest(payload, { seen });
+eq('유효 2건만 남는다(중복1·결손2·비객체1 폐기)', got.length, 2);
+ok('스키마 10필드가 모두 있다(스테이크 3필드 포함)',
+  got.every(g => ['id', 'subject', 'country', 'domain', 'common_practice', 'contrast',
+    'consequence', 'trigger_situation', 'misconception', 'source_hint', 'created_at'].every(k => k in g)),
+  JSON.stringify(Object.keys(got[0] || {})));
+
+// ── 🔴 스테이크 3필드 필수 (2026-07-31) ─────────────────────────────────────
+// 진단: "저장할 이유가 없다". 저장은 ①나중에 쓸 것 ②대화 소재 ③실수 회피 체크리스트에서
+// 나오고, 옛 스키마엔 "모르면 무슨 일이 나는지"를 담을 자리가 없었다. 프롬프트에서 요구만
+// 하고 ingest 에서 안 막으면 실패가 조용해진다 — 모델이 빼먹은 항목이 그대로 백로그에 앉고,
+// 대본 작가는 자극 카드에 쓸 재료가 없어 다시 밋밋한 나열로 돌아간다.
+for (const missing of ['consequence', 'trigger_situation', 'misconception']) {
+  const bad = item(`${missing} 없는 소재`);
+  delete bad[missing];
+  eq(`🔴 ${missing} 결손이면 폐기된다`, bk.ingest(JSON.stringify([bad]), { seen: new Set() }).length, 0);
+  const blank = item(`${missing} 공백인 소재`, { [missing]: '   ' });
+  eq(`🔴 ${missing} 공백문자열도 폐기된다`, bk.ingest(JSON.stringify([blank]), { seen: new Set() }).length, 0);
+}
+ok('스테이크 필드가 값 그대로 보존된다',
+  got[0].consequence.length > 0 && got[0].trigger_situation.length > 0 && got[0].misconception.length > 0);
+
+// hasStakes — 읽는 쪽 판정. 구 재고(3필드 없음)를 죽이지 않고 구분만 한다.
+ok('hasStakes: 신규 항목은 true', bk.hasStakes(got[0]));
+ok('🔴 hasStakes: 구 재고(스테이크 없음)는 false 지만 throw 하지 않는다',
+  bk.hasStakes({ subject: 'x', country: '일본', contrast: 'y' }) === false);
+ok('hasStakes: null 도 안전', bk.hasStakes(null) === false);
+
+// 프롬프트가 세 필드를 실제로 요구하는가 — 스키마만 바꾸고 프롬프트를 안 고치면
+// 모든 후보가 폐기되어 백로그가 조용히 마른다.
+for (const f of ['consequence', 'trigger_situation', 'misconception']) {
+  ok(`프롬프트가 ${f} 를 요구한다`, prompt.includes(f));
+}
+ok('프롬프트가 저장 이유 3종을 명시한다', prompt.includes('저장하는 이유는 셋뿐'));
+ok('🔴 프롬프트가 "문화가 다르다" 류를 값으로 인정하지 않는다', prompt.includes('"문화가 다르다"'));
+ok('🔴 프롬프트가 지어내기를 금지한다(팩트체크와 충돌 방지)', prompt.includes('지어내지 마라'));
+// 회전축 교체(§5) — 나라 반복은 허용, 장면 반복은 금지.
+ok('🔴 프롬프트가 같은 나라 연재를 허용한다', /같은 나라가 여러 건인 것은 \*\*문제가 아니다\*\*/.test(prompt));
+ok('🔴 프롬프트가 장면(trigger_situation) 반복을 금지한다', prompt.includes('반복하면 안 되는 것은 trigger_situation'));
+eq('id 는 subject sha1 10자', got[0].id, bk.idOf('일본에서는 밥그릇을 들고 먹는다'));
+eq('id 길이 10', got[0].id.length, 10);
+ok('idOf 는 결정론적(공백 무관)', bk.idOf(' 같은 주제 ') === bk.idOf('같은 주제'));
+ok('idOf 는 다른 subject 에 다른 id', bk.idOf('A') !== bk.idOf('B'));
+
+eq('파싱 불가 응답은 빈 배열(런을 죽이지 않는다)', bk.ingest('완전 쓰레기', { seen: new Set() }).length, 0);
+eq('배열 아닌 JSON 도 빈 배열', bk.ingest('{"a":1}', { seen: new Set() }).length, 0);
+
+// 이미 본 id 는 두 번째 호출에서도 제외된다.
+eq('seen 누적 dedup', bk.ingest(payload, { seen }).length, 0);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('③ refillBacklog — append + 되읽기');
+
+lib.resetClaudeCalls();
+let seenPrompt = null;
+const stub = (p) => { seenPrompt = p; return payload; };
+
+const r1 = bk.refillBacklog({ n: 6, cfg: CFG, deps: { callClaude: stub } });
+eq('added=2', r1.added, 2);
+eq('total=2', r1.total, 2);
+ok('backlog.jsonl 이 state/cardnews/backlog 아래에 생성된다',
+  existsSync(lib.backlogPath()) && lib.backlogPath().includes(join('cardnews', 'backlog')), lib.backlogPath());
+eq('loadBacklog 로 2건 되읽기', lib.loadBacklog().length, 2);
+ok('스텁이 받은 프롬프트도 BRIEF 로 시작한다', seenPrompt.startsWith(brief));
+ok('요청 개수 n 이 프롬프트에 반영된다', seenPrompt.includes('**6개**'));
+
+// 같은 응답 재투입 → 기존 백로그와 중복이므로 0건 추가.
+const r2 = bk.refillBacklog({ n: 6, cfg: CFG, deps: { callClaude: stub } });
+eq('재투입 시 added=0(기존 백로그와 dedup)', r2.added, 0);
+eq('총계 유지', lib.loadBacklog().length, 2);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('④ 예산 카운터');
+
+lib.resetClaudeCalls();
+eq('초기 0', lib.claudeCallCount(), 0);
+for (let i = 0; i < 3; i++) lib.chargeClaudeCall({ cfg: CFG });
+eq('3회 계상', lib.claudeCallCount(), 3);
+
+lib.resetClaudeCalls();
+let threw = null;
+try { for (let i = 0; i < 5; i++) lib.chargeClaudeCall({ max: 3 }); } catch (e) { threw = e; }
+ok('상한 초과 시 throw', threw !== null && /상한 초과/.test(threw.message), threw?.message);
+eq('throw 시점 호출수 = 상한+1', threw?.budget?.calls, 4);
+
+lib.resetClaudeCalls();
+let exemptThrew = null;
+try { for (let i = 0; i < 5; i++) lib.chargeClaudeCall({ max: 3, exempt: true }); } catch (e) { exemptThrew = e; }
+ok('exempt 는 throw 하지 않는다', exemptThrew === null, exemptThrew?.message);
+eq('🔴 exempt 여도 계상은 한다(F4 과소보고 방지)', lib.claudeCallCount(), 5);
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('⑤ callClaude 실패 경로 — classifyFailure 1개로 수렴');
+
+lib.resetClaudeCalls();
+const fakeExecFail = (bin) => {
+  if (bin === 'claude') {
+    const e = new Error('Command failed: claude -p');
+    e.status = 1; e.stderr = ''; e.stdout = 'usage limit reached';
+    throw e;
+  }
+  throw new Error('unexpected exec');
+};
+let diagErr = null;
+try {
+  lib.callClaude('x', {
+    exec: fakeExecFail, retries: 0,
+    versionProbe: () => ({ ok: true, version: 'test' }),
+    onFailure: () => {}, max: 99, budgetMax: 99,
+  });
+} catch (e) { diagErr = e; }
+ok('실패가 err.diag 를 달고 나온다', Boolean(diagErr?.diag), diagErr?.message);
+eq('usage-limit 로 분류된다', diagErr?.diag?.kind, 'usage-limit');
+eq('사람이 읽는 라벨이 붙는다', diagErr?.diag?.label, lib.FAILURE_LABELS['usage-limit']);
+ok('조치 문구가 붙는다', typeof diagErr?.diag?.action === 'string' && diagErr.diag.action.length > 10);
+eq('진단 source 가 cardnews 경로', diagErr?.diag?.source, 'cardnews/callClaude');
+eq('한도 신호는 즉시 포기(재시도 생략)', diagErr?.diag?.aborted_early !== null, true);
+eq('stdout 도 함께 본다(stderr 가 비어도 분류된다)', diagErr?.diag?.stderr_empty, true);
+eq('실패해도 호출은 계상된다', lib.claudeCallCount(), 1);
+
+// 성공 경로 — 코드펜스 제거 확인.
+lib.resetClaudeCalls();
+const fakeExecOk = () => JSON.stringify({ subtype: 'success', is_error: false, result: '```json\n[]\n```' });
+eq('성공 시 코드펜스가 벗겨진다', lib.callClaude('x', { exec: fakeExecOk, budgetMax: 9 }), '[]');
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${failN === 0 ? 'PASS' : 'FAIL'} — ${passN} passed, ${failN} failed`);
+rmSync(TMP, { recursive: true, force: true });
+process.exit(failN === 0 ? 0 : 1);

@@ -1,0 +1,58 @@
+{
+  "enabled": true,
+  "note": "네이버 검색 OpenAPI 기반 합법 순위추적. 스크래핑·탐지회피 금지 — 공식 검색 API만. 크리덴셜 없으면 warn+exit0(비차단). GSC 폐루프의 네이버판.",
+  "our_domain": "www.thundo.kr",
+  "domain_aliases": ["thundo.kr", "www.thundo.kr"],
+  "api": {
+    "provider": "developer",
+    "_provider_note": "developer=개발자센터(openapi.naver.com, 2027-06-30 지원종료 예정) · apihub=NAVER API HUB(NCP 이관 경로). 이관 시 provider만 apihub로 바꾸고 base_url/헤더 갱신.",
+    "developer": {
+      "base_url": "https://openapi.naver.com/v1/search",
+      "id_env": "NAVER_CLIENT_ID",
+      "secret_env": "NAVER_CLIENT_SECRET",
+      "id_header": "X-Naver-Client-Id",
+      "secret_header": "X-Naver-Client-Secret"
+    },
+    "apihub": {
+      "base_url": "",
+      "id_env": "NAVER_APIHUB_CLIENT_ID",
+      "secret_env": "NAVER_APIHUB_CLIENT_SECRET",
+      "id_header": "X-Naver-Client-Id",
+      "secret_header": "X-Naver-Client-Secret",
+      "_note": "NAVER API HUB(NCP) 이관 후 base_url·헤더 확정되면 채움. 미확정이라 base_url 공란."
+    }
+  },
+  "search_types": ["webkr", "blog"],
+  "display": 30,
+  "daily_cap": 40,
+  "request_delay_ms": 250,
+  "seed_from_gsc": true,
+  "gsc_top_n": 8,
+  "_target_queries_note": "발행글 3클러스터(AI코딩도구·AI퀀트트레이딩·자동화생산성) 기반 한국 시장 실검색 키워드. GSC 영어시드는 보조(gsc_top_n 8)로 축소, 한국어 큐레이션이 주 신호.",
+  "target_queries": [
+    "클로드 코드",
+    "클로드 코드 사용법",
+    "커서 클로드 코드 비교",
+    "MCP 서버 만들기",
+    "클로드 프롬프트 캐싱",
+    "클로드 토큰 비용",
+    "AI 코딩 도구 추천",
+    "코딩 에이전트",
+    "클로드 코드 오케스트레이터",
+    "로컬 LLM 코딩",
+    "파이썬 자동매매",
+    "키움 REST API 자동매매",
+    "한국투자증권 API 자동매매",
+    "퀀트 트레이딩 백테스팅",
+    "freqtrade 사용법",
+    "vectorbt",
+    "FinRL 강화학습 트레이딩",
+    "백테스팅 프레임워크",
+    "워크포워드 최적화",
+    "n8n 자동화",
+    "n8n 웹훅 재시도",
+    "make 자동화",
+    "업무 자동화 도구",
+    "웹 자동화 파이썬"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "comment": "실소스 excerpt 공급(ralplan v6 S1). enabled:false = 추출 스킵 + 게이트16 전면 skip-pass — 발행률 급락 시 1키 롤백. 게이트16 활성화는 별도 키(gate_enforce, S3b 에서 true 로).",
+  "gate_enforce": false,
+  "gate_comment": "S3a shadow 기간 false — 게이트16 은 판정을 항상 skip-pass 로 내되 evidence 를 로그로 남긴다. 캘리브레이션(합성쌍 fail≤10%) + shadow 1주 무오탐 후 true.",
+  "allow_domains": [
+    "reddit.com", "news.ycombinator.com", "github.com", "arxiv.org",
+    "openai.com", "anthropic.com", "docs.python.org", "developer.mozilla.org",
+    "huggingface.co", "modelcontextprotocol.io", "nodejs.org"
+  ],
+  "allow_comment": "🔴 allowlist 밖은 추출 시도 자체 금지 — Jina 는 프록시일 뿐 대상 사이트 ToS 를 세탁하지 않는다(네이버·Cloudflare 원칙 동일). 운영: 월 1회 drop 로그 리뷰로 도메인 추가.",
+  "max_bytes": 8192,
+  "timeout_ms": 15000,
+  "retries": 1,
+  "max_urls_per_topic": 3
+}

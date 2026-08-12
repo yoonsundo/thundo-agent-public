@@ -1,0 +1,428 @@
+{
+  "schema": "aeo-criteria/v1",
+  "version": 5,
+  "updated_at": "2026-08-09T03:53:25.861Z",
+  "note": "bee의 AEO 검증 기준 데이터. 설계: docs/bee-aeo-design.md §1.3. status=active && layer=llm 항목만 bee가 적용. 신규 항목은 candidate로 append(자동 active 승격 금지 — AEO 부정앵커 준비 전). weight=verdict 승격은 회귀게이트+인간 확인 필수.",
+  "criteria": [
+    {
+      "id": "question-headings",
+      "layer": "gate",
+      "claim": "H2 소제목 중 물음표로 끝나는 질문 문형이 2개 이상이면 답변엔진(질문-답변 매칭) 인용에 유리",
+      "check": "H2 중 질문 문형(? 종결) 개수를 세고 2개 미만이면 weak_meta 플래그. 결정론 게이트(check-seo) 이식 전까지 bee가 임시 수행",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://signal.zyppy.com/p/ai-citation-ranking-factors",
+          "title": "Zyppy — AI Citation Ranking Factors (54개 연구 메타분석)",
+          "published": "2026-05-07",
+          "strength": "study",
+          "quote": "질문-답변 매칭(query-answer match) 9.2/10 — 상위 5 인용 요인"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "passage-self-containment",
+      "layer": "llm",
+      "claim": "각 H2 직후 첫 1~2문장(40~80어절)이 앞뒤 맥락 없이 헤딩의 질문에 완결된 답을 주면(answer-first) AI 어시스턴트의 passage 단위 인용 확률 상승",
+      "check": "H2별 첫 문단을 발췌해 '이 문단만 읽고 헤딩 질문에 답이 되는가'를 판단. 만연체 도입·본문 뒤로 미루는 구성이면 aeo_flags에 기록",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/docs/appearance/ai-features",
+          "title": "Google Search Central — AI Features and Your Website",
+          "published": "2025-05-01",
+          "strength": "vendor",
+          "quote": "AI Overviews/AI Mode는 코어 검색 인덱스 기반이며 query fan-out으로 하위 쿼리별 패시지를 추출한다"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "direct-answer-upfront",
+      "layer": "llm",
+      "claim": "본문 도입 200자 내 'X는 …다' 형태의 직접 답변(정의문)이 있으면 답변엔진 발췌·인용에 유리",
+      "check": "본문 도입 200자를 발췌해 핵심 질문에 대한 직접 서술이 있는지 판단. 배경 서사로만 시작하면 aeo_flags에 기록",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.wix.com/studio/ai-search-lab/research/content-types-most-cited-by-llms",
+          "title": "Wix AI Search Lab — Content Types Most Cited by LLMs",
+          "published": "2025-09-01",
+          "strength": "vendor",
+          "quote": "직접 답변·표·목록·명확한 헤딩이 있는 콘텐츠 유형이 LLM 인용 상위"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "citation-worthiness",
+      "layer": "llm",
+      "claim": "통계 수치·출처 명시·전문가 인용이 결합된 문장은 답변엔진 가시성을 상대 30~40% 높인다",
+      "check": "섹션마다 어시스턴트가 근거로 집어갈 문장(숫자+단위+출처, 비교, 조건/예외 명시)이 있는지 판단. density 게이트와 중복 fail 금지 — bee는 '발췌될 위치에 있는가'만 본다",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://arxiv.org/abs/2311.09735",
+          "title": "GEO: Generative Engine Optimization (KDD 2024)",
+          "published": "2024-08-01",
+          "strength": "study",
+          "quote": "인용(출처)·전문가 인용문·통계 추가가 상위 3개 기법 — Position-Adjusted Word Count 기준 상대 30~40% 가시성 향상. 키워드 스터핑은 효과 없음/역효과"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "faq-self-containment",
+      "layer": "llm",
+      "claim": "FAQ 답변이 본문 없이 발췌만으로 완전한 정보를 전달하면 AI 어시스턴트 직접 인용에 유리 (FAQ 형태 자체는 check-seo 게이트 몫)",
+      "check": "'## 자주 묻는 질문' 섹션이 있을 경우 각 A. 답변의 자기완결성을 판단. 본문 맥락 없이는 이해 불가한 답변이면 weak_meta 플래그",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "docs/faq-contract.md",
+          "title": "FAQ 섹션 데이터 계약 (내부) — FAQPage JSON-LD 렌더 연동",
+          "published": "2026-06-30",
+          "strength": "study",
+          "quote": "답변은 본문 재진술 금지 — 신규 정보(수치·조건·예외·비교)로 작성"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "meta-description-quality",
+      "layer": "llm",
+      "claim": "description이 핵심 키워드를 포함하고 클릭을 유도하며 본문 첫 문장 복붙이 아니면 검색·답변엔진 스니펫 품질이 오른다 (길이·존재 검사는 check-seo 게이트 몫)",
+      "check": "description 필드가 있을 경우 내용 품질(키워드 포함·클릭 유도·본문 복붙 여부)만 판단. 복붙이면 weak_meta 플래그. 필드 없으면 flags 기록만, verdict 영향 없음",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/blog/2025/05/succeeding-in-ai-search",
+          "title": "Google — Top ways to succeed in AI search",
+          "published": "2025-05-01",
+          "strength": "vendor",
+          "quote": "AI 검색에 별도 특수 최적화 요건 없음 — 기존 검색 품질 신호(유용한 요약 포함)가 그대로 적용"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "scannable-structure",
+      "layer": "llm",
+      "claim": "스캔 가능한 구조(목록·표·명확한 소단위)가 있는 콘텐츠가 LLM 인용 상위 — 긴 문단 벽은 발췌 단위로 잘리지 않음",
+      "check": "본문에 목록·표·짧은 문단 등 발췌 가능한 구조 단위가 있는지 판단. 전체가 5문장 이상 문단 벽으로만 이어지면 aeo_flags에 기록",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.wix.com/studio/ai-search-lab/research/content-types-most-cited-by-llms",
+          "title": "Wix AI Search Lab — Content Types Most Cited by LLMs",
+          "published": "2025-09-01",
+          "strength": "vendor",
+          "quote": "직접 답변·표·목록·명확한 헤딩이 있는 콘텐츠 유형이 LLM 인용 상위"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-02",
+      "expires_at": "2026-12-29"
+    },
+    {
+      "id": "table-citation-advantage",
+      "layer": "llm",
+      "claim": "표(table) 형태 데이터는 동일 내용 산문 대비 4.2배 높은 LLM 인용률 — 비교·다속성 정보는 표 구조 권장",
+      "check": "3개 이상 항목을 3개 이상 속성으로 비교하는 내용이 산문으로만 서술되어 있으면 aeo_flags에 '표 구조 전환 권장' 기록. 표가 이미 있으면 플래그 없음",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://arxiv.org/abs/2603.29979",
+          "title": "Structural Feature Engineering for Generative Engine Optimization",
+          "published": "2026-03-01",
+          "strength": "study",
+          "quote": "Experimental evaluation across six mainstream generative engines demonstrates improvements in citation rate (17.3%) and subjective quality (18.5%)"
+        },
+        {
+          "url": "https://kime.ai/blog/how-to-structure-content-for-llm-extraction-geo-guide-2026",
+          "title": "How to Structure Content for LLM Extraction: A GEO Guide for 2026",
+          "published": "2026-04-10",
+          "strength": "blog",
+          "quote": "Tables: Cited 4.2x more frequently than equivalent prose descriptions"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-12",
+      "expires_at": "2027-01-08"
+    },
+    {
+      "id": "author-byline-transparency",
+      "layer": "llm",
+      "claim": "명확한 저자 서명(byline)과 저자 배경 정보(author page 링크)가 E-E-A-T 신뢰 신호로 작동 — Google이 2026년 공식 문서에서 authorship transparency를 직접 품질 고려사항으로 명시",
+      "check": "frontmatter author 필드 존재 여부와 본문 내 저자 경험 앵커(1인칭 경험 서술) 일관성을 판단. author 필드 없거나 경험 앵커 없으면 weak_meta 플래그",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/docs/fundamentals/creating-helpful-content",
+          "title": "Google Search Central — Creating Helpful, Reliable, People-First Content",
+          "published": "2026-01-15",
+          "strength": "vendor",
+          "quote": "Is it self-evident to your visitors who authored your content? Do pages carry a byline, where one might be expected? Do bylines lead to further information about the author or authors involved, giving background about them and the areas they write about?"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-07-12",
+      "expires_at": "2026-10-08"
+    },
+    {
+      "id": "faq-schema-sunset",
+      "layer": "llm",
+      "claim": "FAQ 리치 결과가 2026년 5월 구글 검색에서 제거됨 — FAQ 스키마 마크업의 SERP 직접 가시성 효과 소멸, 콘텐츠 품질 자체(Q&A 자기완결성)는 여전히 AI 인용에 유효",
+      "check": "FAQ 섹션 존재 시 답변 자기완결성만 판단(기존 faq-self-containment). 스키마 마크업 자체는 검증 범위 밖 — 메타 지식 전용",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/updates",
+          "title": "Latest Google Search Documentation Updates | Google Search Central",
+          "published": "2026-06-12",
+          "strength": "vendor",
+          "quote": "June 12: FAQ rich result feature documentation removed entirely."
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-02",
+      "expires_at": "2026-11-02"
+    },
+    {
+      "id": "no-special-aeo-requirements",
+      "layer": "llm",
+      "claim": "구글 AI Overviews·AI Mode 노출에 별도 기술 요건 없음 — 기본 검색 인덱스 + 스니펫 자격이면 충분, 특수 최적화·AI 텍스트 파일·마크업 불필요",
+      "check": "메타 원칙 — 과잉 최적화·근거 부족 기법(llms.txt 등) 배제 근거로만 사용. 개별 글 판정에는 직접 적용 안 함",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/docs/appearance/ai-features",
+          "title": "Google Search Central — AI Features and Your Website",
+          "published": "2025-05-01",
+          "strength": "vendor",
+          "quote": "There are no additional requirements to appear in AI Overviews or AI Mode, nor other special optimizations necessary. To be eligible to be shown as a supporting link in AI Overviews or AI Mode, a page must be indexed and eligible to be shown in Google Search with a snippet. There are no additional technical requirements."
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-02",
+      "expires_at": "2027-02-02"
+    },
+    {
+      "id": "llms-txt-not-required",
+      "layer": "llm",
+      "claim": "llms.txt 파일이 구글 검색 가시성에 필요 없음 — 2026년 6월 공식 명시",
+      "check": "메타 원칙 — llms.txt 제출 차단 근거. 개별 글 검증에 직접 적용 안 함",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/updates",
+          "title": "Latest Google Search Documentation Updates | Google Search Central",
+          "published": "2026-06-15",
+          "strength": "vendor",
+          "quote": "June 15: Clarification on llms.txt files: not required for Google Search visibility."
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-02",
+      "expires_at": "2026-11-02"
+    },
+    {
+      "id": "first-hand-experience-verification",
+      "layer": "llm",
+      "claim": "1차 경험 실증(제품 실사용·장소 방문·주제 실천) 신호가 2026년 E-E-A-T 주요 판별 요인 — 원본 사진·구체 결과·검증 가능 디테일로 입증",
+      "check": "1인칭 경험 서술이 있을 경우 구체 증거(원본 사진·수치 결과·시간/장소 특정·재현 가능 절차) 동반 여부 판단. 경험 주장만 있고 증거 없으면 weak_meta 플래그",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/docs/fundamentals/creating-helpful-content",
+          "title": "Google Search Central — Creating Helpful, Reliable, People-First Content",
+          "published": "2026-01-15",
+          "strength": "vendor",
+          "quote": "Does your content clearly demonstrate first-hand expertise and a depth of knowledge (for example, expertise that comes from having actually used a product or service, or visiting a place)?"
+        },
+        {
+          "url": "https://www.digitalapplied.com/blog/e-e-a-t-march-2026-google-rewards-experience-content-guide",
+          "title": "E-E-A-T in March 2026: Google Experience Content Guide",
+          "published": "2026-03-15",
+          "strength": "blog",
+          "quote": "Content that demonstrates genuine first-hand experience through specific details, original outcomes, and verifiable author credentials outranks comprehensive but impersonal information pages"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-02",
+      "expires_at": "2027-02-02"
+    },
+    {
+      "id": "content-length-citation-correlation",
+      "layer": "llm",
+      "claim": "20,000자 이상 장문 콘텐츠가 평균 10.18 AI 인용, 500자 미만은 2.39 인용 — 4.3배 차이. 단 교란변수(주제 깊이) 존재로 advisory 전용",
+      "check": "콘텐츠 길이 자체는 판정 기준 아님 — 메타 지식 전용. 단 충분한 깊이(섹션별 구체 증거·비교·조건)는 기존 density·citation-worthiness 기준으로 판단",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.omnibound.ai/blog/generative-engine-optimization-statistics",
+          "title": "Generative Engine Optimization Statistics (2026): 60+ Data Points",
+          "published": "2026-01-15",
+          "strength": "study",
+          "quote": "Pages 20,000+ characters: 10.18 average AI citations. Pages under 500 characters: 2.39 average citations. 4.3x more citations for long-form vs. thin content"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "heading-hierarchy-structure",
+      "layer": "gate",
+      "claim": "H1→H2→H3 엄격한 계층 구조를 따르는 페이지가 ChatGPT 인용의 68.7%를 차지 — 헤딩 계층이 AI 파싱 가능성 결정 요인",
+      "check": "H1 1개 존재·H2 2개 이상·H3가 논리적으로 상위 H2 하위에 배치되는지 검사. 계층 위반(H1 복수·H3가 H2 없이 직접 H1 하위 등) 시 플래그. 결정론 게이트 승격 후보",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.omnibound.ai/blog/generative-engine-optimization-statistics",
+          "title": "Generative Engine Optimization Statistics (2026): 60+ Data Points",
+          "published": "2026-01-15",
+          "strength": "study",
+          "quote": "68.7% of ChatGPT-cited pages follow strict H1→H2→H3 hierarchy (Foundation Marketing)"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "content-position-citation-distribution",
+      "layer": "llm",
+      "claim": "콘텐츠 첫 30% 구간이 LLM 인용의 44.2%를 차지, 중간 30-70% 구간은 31.1%, 마지막 30%는 24.7% — 핵심 정보를 상단 배치해야 인용 확률 상승",
+      "check": "기존 direct-answer-upfront 기준의 실증 보강 근거 — 단독 기준 아닌 메타 지식. 본문 도입 200자 내 직접 답변 판단 시 참고",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.omnibound.ai/blog/generative-engine-optimization-statistics",
+          "title": "Generative Engine Optimization Statistics (2026): 60+ Data Points",
+          "published": "2026-01-15",
+          "strength": "study",
+          "quote": "44.2% of LLM citations from first 30% of content, 31.1% from middle 30-70%, 24.7% from final 30%"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "content-freshness-signal",
+      "layer": "llm",
+      "claim": "30일 이내 업데이트된 콘텐츠가 그렇지 않은 것보다 3.2배 더 많은 인용. AI 인용 콘텐츠는 일반 검색 결과 대비 25.7% 더 신선함",
+      "check": "frontmatter date/updated 필드 존재는 check-seo 게이트 몫. bee는 본문 내 명시적 날짜 앵커(예: '2026년 8월 기준', '최근 업데이트: …') 존재 여부 판단. 시의성 주제인데 날짜 앵커 없으면 weak_meta 플래그",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.omnibound.ai/blog/generative-engine-optimization-statistics",
+          "title": "Generative Engine Optimization Statistics (2026): 60+ Data Points",
+          "published": "2026-01-15",
+          "strength": "study",
+          "quote": "3.2x more citations for content updated within 30 days. AI-cited content is 25.7% fresher than traditional organic results. 76.4% of ChatGPT's most-cited pages updated within 30 days"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "schema-markup-citation-boost",
+      "layer": "llm",
+      "claim": "구조화 데이터(schema markup) 사용 사이트가 AI 인용 44% 더 많이 받음. Organization·Article·Product·Review·LocalBusiness 스키마가 우선순위",
+      "check": "메타 원칙 — 스키마 검증은 사이트 인프라 몫(bee 초안 검증 범위 밖). 단 콘텐츠가 스키마와 일치하는 구조(리뷰 글인데 평점·장단점 명시, 제품 비교인데 표 등)를 갖췄는지는 scannable-structure 기준으로 간접 판단",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://seoprofy.com/blog/llm-citations/",
+          "title": "How to Earn LLM Citations: A Practical Guide for AI-Search Visibility in 2026",
+          "published": "2026-01-10",
+          "strength": "study",
+          "quote": "Websites using structured data frameworks gain up to 44% more AI references"
+        },
+        {
+          "url": "https://globerunner.com/structured-data-schema-markup-ai-2026/",
+          "title": "Structured Data in 2026: The Schema Markup AI Actually Uses",
+          "published": "2026-02-20",
+          "strength": "blog",
+          "quote": "For AI systems, schema is a trust signal, not a display trigger. Organization schema establishes your brand's identity across the web...that ambiguity reduces citation confidence"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "ai-citation-vs-serp-ranking-divergence",
+      "layer": "llm",
+      "claim": "AI Overviews 인용의 83%가 일반 검색 상위 10위 밖에서 나옴 — 전통 SEO 순위와 AI 인용은 다른 요인으로 작동",
+      "check": "메타 원칙 — AI 인용 최적화가 전통 SEO 순위 최적화와 다름을 입증하는 근거. 개별 글 판정에 직접 적용 안 함",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.omnibound.ai/blog/generative-engine-optimization-statistics",
+          "title": "Generative Engine Optimization Statistics (2026): 60+ Data Points",
+          "published": "2026-01-15",
+          "strength": "study",
+          "quote": "83% of AI Overview citations from pages outside organic top 10"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "brand-mention-visibility-correlation",
+      "layer": "llm",
+      "claim": "브랜드 언급(brand mentions)이 AI 가시성과 0.664 상관계수 — 백링크(0.218)보다 3배 강력한 신호",
+      "check": "메타 원칙 — 브랜드 언급은 off-site 신호라 초안 검증 범위 밖. 단 본문 내 자사 브랜드 일관성(회사명·제품명 정확 표기)은 신뢰 신호로 간접 판단 가능",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://www.omnibound.ai/blog/generative-engine-optimization-statistics",
+          "title": "Generative Engine Optimization Statistics (2026): 60+ Data Points",
+          "published": "2026-01-15",
+          "strength": "study",
+          "quote": "Brand mentions: 0.664 correlation with AI visibility (Ahrefs). Backlinks: 0.218 correlation (3x weaker). Branded anchors: 0.527 correlation"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    },
+    {
+      "id": "eeat-trust-primacy",
+      "layer": "llm",
+      "claim": "Trust가 E-E-A-T 중 가장 중요한 요소 — 신뢰할 수 없는 페이지는 경험·전문성·권위가 아무리 높아도 E-E-A-T 낮음",
+      "check": "메타 원칙 — E-E-A-T 우선순위 가중치 조정의 근거. 개별 글 판정 시 Trust 신호(출처 명시·투명성·일관성) 위반이 있으면 다른 E-E-A-T 요소가 높아도 전체 E-E-A-T 점수 하향 조정",
+      "weight": "advisory",
+      "sources": [
+        {
+          "url": "https://developers.google.com/search/docs/fundamentals/creating-helpful-content",
+          "title": "Google Search Central — Creating Helpful, Reliable, People-First Content",
+          "published": "2026-01-15",
+          "strength": "vendor",
+          "quote": "Of the E-E-A-T components, trust is most important. The others contribute to trust, but content doesn't necessarily have to demonstrate all of them"
+        }
+      ],
+      "status": "active",
+      "adopted_at": "2026-08-09",
+      "expires_at": "2027-02-09"
+    }
+  ]
+}

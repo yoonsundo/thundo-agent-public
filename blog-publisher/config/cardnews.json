@@ -1,0 +1,219 @@
+{
+  "schema": "cardnews/v1",
+  "enabled": true,
+  "note": "인스타 카드뉴스 — 고전문학의 문장으로 건네는 위로. 근거: .omc/specs/cardnews-vertical-comfort.md (버티컬 전환 2026-07-31). 엔진(render·gates·host·meta·publish·token·insights·report·run-cardnews·lib)은 무수정 재사용, 콘텐츠 레이어(backlog·pick·factcheck·script·마스코트·config)만 교체.",
+  "channel": {
+    "vertical": "고전문학의 문장으로 건네는 위로",
+    "tone": "지친 사람 곁의 말. 훈계·명령조 금지. 인용 날조·사람 일반화·치료 조언 금지, 원문에서 확인된 문장만.",
+    "language": "ko",
+    "problem_axes": [
+      "연애·이별",
+      "인간관계·거리",
+      "가족",
+      "자기 자신과의 관계",
+      "일과 소진",
+      "불안·비교",
+      "상실·애도",
+      "변화·선택"
+    ],
+    "groups_file": "config/cardnews-groups.txt",
+    "note": "problem_axes 는 발굴 프롬프트의 문제 축(옛 domains 자리). groups_file 은 일반화 게이트가 읽는 **사람 축**(성별·연령·유형) 목록이며 그 게이트의 소유다 — 옛 `countries_file` 키는 가리키던 파일이 `.worldculture.bak` 로 내려가 조용한 실패를 만들므로 제거했다."
+  },
+  "backlog": {
+    "target_size": 40,
+    "refill_batch": 10,
+    "refill_buffer_days": 5
+  },
+  "pick": {
+    "daily_target": 2,
+    "weights": {
+      "resonance": 0.35,
+      "savability": 0.3,
+      "clarity": 0.2,
+      "freshness": 0.15
+    },
+    "similarity": {
+      "enabled": true,
+      "bigram_jaccard": 0.45,
+      "substring": true,
+      "min_chars": 6
+    }
+  },
+  "factcheck": {
+    "enabled": true,
+    "level": "corpus",
+    "note": "🔴 1차 판정은 LLM 이 아니라 **원문 대조**다(2026-07-31 사용자 결정). quote.fulltext_* 를 읽어 원문 전문을 받아 캐시하고, quote_original 을 강한 정규화 후 대조한다 — 못 찾으면 즉시 false 이고 LLM 은 호출조차 되지 않는다. LLM(hedgehog)은 기계가 찾은 뒤 맥락 왜곡·출처 라벨·번역 충실도만 본다."
+  },
+  "quote": {
+    "max_chars": 120,
+    "min_interpretation_ratio": 1.5,
+    "allowed_forms": [
+      "novel",
+      "essay",
+      "nonfiction"
+    ],
+    "fulltext_hosts": [
+      "gutenberg.org",
+      "www.gutenberg.org"
+    ],
+    "fulltext_timeout_ms": 60000,
+    "fulltext_max_bytes": 33554432,
+    "context_chars": 400,
+    "note": "🔴 인용 안전 계약. max_chars 는 카드에 나가는 quote_ko 상한(한두 문장) — 인용이 길수록 정당한 인용의 범위를 벗어난다. min_interpretation_ratio 는 해설/인용 길이 비(인용이 종속적이어야 한다). allowed_forms 에 **poem 은 없다** — 시는 두세 줄만 인용해도 작품의 상당 부분이 된다(사용자 결정). fulltext_hosts 는 원문 대조 소스 화이트리스트: 모델이 지어낸 URL 로 대조를 우회하지 못하게 하고, 현실적으로 구텐베르크 plain text 만 대조 가능하다(한계는 backlog.mjs 주석 참조). context_chars 는 대조 성공 시 LLM 에 넘기는 앞뒤 문맥 길이."
+  },
+  "cards": {
+    "count": 7,
+    "body_count": 5,
+    "headline_max_chars": 24,
+    "body_max_chars": 90,
+    "note": "count(7) = cover 1 + body_count + outro 1. 🔴 실제 검증·프롬프트가 읽는 값은 body_count 다(3~7 로 클램프) — count 는 사람이 읽는 총계 표기일 뿐이라 여기만 고치면 아무것도 변하지 않는다. 카드 역할(전체 번호 기준)은 body_count 에서 파생된다: 1=표지(문제 지목)·2=공감·3~4=책의 말(인용+출처)·5=해석·6=전환·7=저장+지목."
+  },
+  "render": {
+    "width": 1080,
+    "height": 1350,
+    "format": "jpeg",
+    "quality": 92,
+    "requality_on_oversize": 82,
+    "device_scale_factor": 1
+  },
+  "imagen": {
+    "enabled": true,
+    "key_file": "~/.secrets/gsc-sa.json",
+    "model": "gemini-2.5-flash-image",
+    "location": "us-central1",
+    "aspect_ratio": "4:5",
+    "per_card": false,
+    "scrim": {
+      "tint": "#040812",
+      "target_ratio": 5,
+      "min_alpha": 0.18,
+      "max_alpha": 0.92,
+      "shape": [
+        0.14,
+        0,
+        0.14,
+        0.34
+      ],
+      "shape_stops": [
+        0,
+        20,
+        52,
+        100
+      ],
+      "body_extra_alpha": 0.12,
+      "body_blur_px": 7,
+      "cover_blur_px": 0,
+      "saturate": 0.85
+    },
+    "note": "카드 배경 AI 사진(Vertex AI Gemini 2.5 Flash Image, shorts 와 같은 서비스계정 재사용). 평평한 파란 그라데이션 대체. ⚠ 응답은 aspect_ratio 와 무관하게 1024² 정사각 — CSS background-size:cover 가 1080×1350 커버크롭을 대신한다. per_card=false 는 글 1편당 1장을 7슬라이드가 공유(~$0.03, 스톡사진 콜라주 방지); true 면 슬라이드마다 생성(~$0.21). scrim 은 **고정 알파가 아니라 사진마다 실측 역산**이다 — 글자 자리의 가장 밝은 16px 블록을 재서 target_ratio 를 만족하는 최소 알파만 덮는다(고정값을 쓰면 이미 어두운 AI 사진이 통째로 사라진다). shape 는 flat 위에 더해지기만 하는 장식용 그라데이션. 실패·미사용 시 그라데이션 폴백(무중단)."
+  },
+  "gates": {
+    "width": 1080,
+    "height": 1350,
+    "max_bytes": 8388608,
+    "expected_count": 7,
+    "note": "⚠ expected_count 는 cards.body_count 와 **손으로 맞춰야 한다**(= body_count + 2). 이미지 게이트는 대본 스키마를 모르고 슬라이드 파일 개수만 센다. 어긋나면 매 런 count 체크에서 fail 로 떨어진다 — 조용히 잘못 나가지는 않지만(fail-closed) 원인이 한눈에 안 보이므로 body_count 를 바꿀 땐 이 값도 같이 바꿔라."
+  },
+  "host": {
+    "provider": "supabase",
+    "bucket": "cardnews",
+    "path_prefix": "",
+    "verify_timeout_ms": 15000,
+    "gc_after_days": 90,
+    "note": "path_prefix 는 빈 문자열이 기본 — 버킷이 cardnews 전용이라 버킷명이 곧 네임스페이스다. 계획 §5.1 의 예시 URL(/public/cardnews/2026/…)과 일치시킨다. 버킷을 공유하게 되면 여기에 접두어를 넣으면 된다."
+  },
+  "meta": {
+    "api_version": "v25.0",
+    "graph_base": "https://graph.instagram.com",
+    "token_file": "~/.secrets/instagram-oauth.json",
+    "publish_timeout_ms": 60000,
+    "child_retry": {
+      "max": 3,
+      "base_ms": 2000
+    },
+    "container_ttl_ms": 72000000,
+    "reconcile_delay_ms": 45000,
+    "reconcile_lookback_ms": 1800000,
+    "recent_media_limit": 25,
+    "stale_publish_unknown_days": 7,
+    "max_confirmed_failed_republish": 1,
+    "max_publish_issued": 3,
+    "liveness_check": true
+  },
+  "token": {
+    "lifetime_days": 60,
+    "refresh_start_day": 45,
+    "daily_retry_day": 50,
+    "escalate_day": 55
+  },
+  "caption": {
+    "max_chars": 2200,
+    "max_hashtags": 30,
+    "max_mentions": 20
+  },
+  "buffer": {
+    "target": 5,
+    "max_topup_per_run": 2
+  },
+  "slot": {
+    "daily_cap": 2,
+    "hours": [
+      11,
+      19
+    ],
+    "note": "🔴 daily_cap 은 하루 발행 상한의 **단일 출처**다(2026-07-31 이중 생성 전환으로 1→2). 인스타는 삭제 API 가 없으므로 이 가드가 중복 발행을 막는 유일한 선이고, run-cardnews 의 0b-3 단계가 KST 날짜 기준 published 건수를 세어 강제한다. hours 는 cron 이 깨우는 시각이자 generators.by_hour 의 키와 짝이다."
+  },
+  "generators": {
+    "enabled": true,
+    "default": "claude",
+    "by_hour": {
+      "11": "claude",
+      "19": "codex"
+    },
+    "stages": [
+      "script"
+    ],
+    "codex": {
+      "bin": "codex",
+      "timeout_ms": 300000,
+      "retries": 2
+    },
+    "note": "🔴 이중 생성 — 하루 2편을 **서로 다른 소재**로 클로드·코덱스가 한 편씩 쓴다(사용자 결정 2026-07-31, 근거: .omc/specs/deep-interview-cardnews-dual-generator.md). 목적은 ①클로드 사용량 분산 ②문체 다양성이지 모델 비교가 아니다 — 소재가 다르므로 성과 차이는 교란돼 있다. by_hour 는 슬롯 시각(KST)→작가 배정이고, stages 는 코덱스에 넘기는 단계다. script 만인 이유: 스키마 준수 실적이 0인 모델에 안전 판정(factcheck)을 맡기지 않는다. 코덱스가 실패한 날은 클로드가 대신 쓴다(사용자 결정: '매일 2편'이 문체 다양성보다 우선) — 그 사실은 런 기록의 generator_fallback 에 남는다. enabled=false 는 비상 원복 스위치. 폴백 대상은 설정 키로 두지 않는다 — 생성기가 둘뿐이라 코덱스가 죽으면 갈 곳은 클로드 하나이고, 안 읽히는 키는 '고쳐도 아무 일이 안 일어나는 손잡이'가 된다(slot.daily_cap 이 그랬다). ⚠ codex 는 이 박스에서 snap 이라 /tmp 가 private namespace 다: 결과 임시파일은 반드시 레포 아래여야 하고(writer.mjs 가 강제), 아니면 종료코드 0 인데 결과만 사라진다. 코덱스 호출은 budget.max_claude_calls_per_run 에 계상하지 않는다(다른 지갑 — 합치면 분산 효과가 장부에서 사라진다)."
+  },
+  "budget": {
+    "max_claude_calls_per_run": 9,
+    "topup_exempt_from_throw": true
+  },
+  "review": {
+    "tier2_alert": true,
+    "stale_review_days": 14,
+    "auto_pause_on_stale": false,
+    "auto_pause_unconfirmed_liveness": 3,
+    "auto_expire_days": 14,
+    "monthly_digest": true,
+    "note": "TIER-2 적체 정책 = 자동 만료 + 월간 요약 (사용자 결정 2026-07-31). auto_expire_days 지난 미검토 항목은 auto_reviewed 로 표시하고 큐에서 내린다 → 적체로 인한 자동 정지 없음(auto_pause_on_stale=false). 대신 월 1회 요약을 사람에게 보낸다. ⚠ 이것은 리스크 수용이다 — 애매한 표현이 사람 눈을 거치지 않고 나갈 수 있고 인스타는 삭제가 불가능하다. auto_pause_unconfirmed_liveness 같은 다른 정지 트리거는 그대로 살아 있다."
+  },
+  "insights": {
+    "enabled": true,
+    "metrics": [
+      "saved",
+      "shares",
+      "reach",
+      "profile_visits",
+      "total_interactions"
+    ],
+    "core_metrics": [
+      "saved",
+      "shares",
+      "reach",
+      "total_interactions"
+    ],
+    "max_posts_per_run": 0,
+    "request_timeout_ms": 15000,
+    "note": "성과 **읽기 전용**(설정 자동조정=자가발전은 v1.1 소관, 여기서 config 를 쓰지 않는다). 인스타 인사이트는 소급 조회 창이 유한해서 첫 발행 시점부터 수집이 돌지 않으면 영구 손실이라 발행 스위치보다 먼저 켜 둔다(발행 전에는 대상 글이 0건이라 무해). metrics 는 CAROUSEL_ALBUM 기준 — Graph 는 이름 하나만 거부돼도 요청 전체를 400 으로 떨구므로(부분 응답 없음) 거부 시 core_metrics 로 1회만 축소 재시도한다. profile_visits 가 core 에서 빠진 이유가 그것. max_posts_per_run=0 은 전량."
+  },
+  "publish": {
+    "enabled": false,
+    "note": "🔴 무인 발행 마스터 스위치 — Step 6 에서만 true. 켜는 순간 cron 이 실제 인스타그램에 발행한다."
+  }
+}
