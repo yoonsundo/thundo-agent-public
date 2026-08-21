@@ -579,6 +579,29 @@ export async function runDaily(opts = {}) {
     }, { now: now() });
     rec('caption', true, { chars: caption.chars, hashtags: caption.hashtagCount, truncated: caption.truncated });
 
+    // ── 9-b. 사이트 DB 기록 (status='ready') ────────────────────────────────
+    // 🔴 **발행보다 먼저** 기록한다(2026-08-21 반자동 전환). 인스타 캐러셀에 음악을 넣을 수
+    //    없어 자동 발행을 포기했고, 지금은 `publish.enabled=false` 라 아래 10단계가 게시를
+    //    하지 않는다. 예전처럼 "발행 성공 뒤에만 기록"하면 **관리자 화면이 영원히 빈다** —
+    //    관리자가 올릴 대상 자체가 DB 에 안 들어오기 때문이다.
+    //    여기까지 오면 슬라이드는 호스팅됐고 캡션도 확정이라 사람이 올릴 준비가 끝난 상태다.
+    //    media_id 가 없으므로 post-record 가 status='ready' 로 넣고, 아래에서 자동 발행이
+    //    성공하면 같은 행을 published 로 다시 upsert 한다(같은 post_id, on conflict).
+    const recorder = deps.recordPublishedPost || defaultRecordPublishedPost;
+    const recordToSite = async (label) => {
+      try {
+        const r = await recorder(postId, { fetchImpl: deps.fetchImpl });
+        if (!r?.ok) log.warn(`사이트 DB 기록 실패(비차단·${label}): ${r?.skipped || r?.error}`);
+        rec('site_record', Boolean(r?.ok), { phase: label, skipped: r?.skipped ?? null, error: r?.error ?? null });
+        return r;
+      } catch (e) {
+        log.warn(`사이트 DB 기록 예외(비차단·${label}): ${e.message}`);
+        rec('site_record', false, { phase: label, error: e.message });
+        return null;
+      }
+    };
+    await recordToSite('ready');
+
     // ── 10. 발행 (내부 step 0 이 초크포인트) ────────────────────────────────
     stage = 'publish';
     const published = await publishPost(postId, {
@@ -594,13 +617,9 @@ export async function runDaily(opts = {}) {
       // 사이트 갤러리(`/cardnews`)가 읽는 테이블에 한 행 남긴다. 발행은 이미 끝났으므로
       // 여기 실패는 런을 죽이지 않는다 — 인스타는 되돌릴 수 없고, 이 행은 다음 런이나
       // 손으로도 채울 수 있다. 다만 조용히 넘기지는 않는다(갤러리가 비는 원인이 된다).
-      const recorder = deps.recordPublishedPost || defaultRecordPublishedPost;
-      let recorded = null;
-      try {
-        recorded = await recorder(postId, { fetchImpl: deps.fetchImpl });
-        if (!recorded?.ok) log.warn(`사이트 DB 기록 실패(비차단): ${recorded?.skipped || recorded?.error}`);
-      } catch (e) { log.warn(`사이트 DB 기록 예외(비차단): ${e.message}`); }
-      rec('site_record', Boolean(recorded?.ok), { skipped: recorded?.skipped ?? null, error: recorded?.error ?? null });
+      // 자동 발행이 성공했으면 같은 행을 published 로 덮는다(같은 post_id upsert).
+      // 실패해도 런을 죽이지 않는다 — 인스타는 되돌릴 수 없고, ready 행은 이미 들어가 있다.
+      await recordToSite('published');
 
       await topUp({ cfg, charged, candidates, usedIds: usedBacklogIds(item, holds), now: now() });
       finish({ outcome: 'published' });

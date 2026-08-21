@@ -401,8 +401,19 @@ textarea.input { min-height: 90px; resize: vertical; }
   box-shadow: 0 1px 2px color-mix(in srgb, #2d2b2b 6%, transparent),
               0 8px 24px color-mix(in srgb, #2d2b2b 5%, transparent); }
 /* 부수 정보 카드 — 전부 흰색으로 띄우면 위계가 다시 사라진다. 배경에 눕혀 대비를 만든다. */
-.card-quiet { background: transparent; border-style: dashed;
-  border-color: var(--color-hairline); box-shadow: none; }
+/* 부수 정보 카드 — 흰 카드 안에 중첩되는 자리다.
+   `.card` 를 덧붙이면 흰 배경·그림자가 생겨 최상위 카드처럼 보이고 위계가 무너지므로
+   **단독으로 쓴다**. 그래서 padding·radius 를 여기서 직접 준다.
+
+   ⚠ 예전엔 `border-style: dashed` 만 걸고 width 를 주지 않았다. 단독 사용 시
+   border-width 가 초기값 medium(≈3px)이 되어 굵은 점선 상자만 남았다 —
+   2026-08-21 경영회의 섹션이 실제로 그렇게 보였고 "미완성 스케치" 로 읽혔다.
+   점선은 `.empty`·`.chart-empty` 처럼 **아직 없음**을 뜻하는 자리에만 남긴다. */
+.card-quiet { display: flex; flex-direction: column; gap: var(--space-2);
+  min-width: 0; overflow-wrap: anywhere;
+  padding: var(--space-4); background: transparent;
+  border: 1px solid var(--color-hairline); border-radius: var(--radius-lg);
+  box-shadow: none; }
 .card-outline { background: transparent; border: 1px solid var(--color-hairline); }
 .card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); }
 .card-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight);

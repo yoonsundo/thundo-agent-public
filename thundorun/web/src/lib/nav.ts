@@ -23,19 +23,23 @@ export interface NavItem {
 /** 공지사항 탭 — SHOW_NOTICES(lib/featureFlags.ts) 가 true 일 때만 PUBLIC_NAV 에 들어간다. 라우트(/notices)는 그대로 살아 있다. */
 const NOTICES_NAV: NavItem = { href: '/notices', label: '공지사항', icon: Megaphone };
 
-/** 공개 메뉴 — 비로그인 포함 항상 노출. (프로젝트 탭은 2026-07-02 사용 중단 → 같은 대시보드를 '홈'으로 리브랜딩) */
+/**
+ * 공개 메뉴 — 비로그인 포함 항상 노출.
+ * 에이전트·에이전트 일지는 2026-07-06 로그인 전용이었다가 **2026-08-21 다시 공개**로 돌아왔다.
+ * 이 회사가 어떻게 돌아가는지가 보여줄 것의 핵심이라, 로그인 뒤에 두면 볼 사람이 없다.
+ */
 export const PUBLIC_NAV: NavItem[] = [
   { href: '/',        label: '홈',       icon: Home },
   { href: '/blog',    label: '블로그',   icon: PenLine },
   { href: '/videos',  label: '영상',     icon: Play },
   { href: '/cardnews', label: '카드뉴스', icon: Images },
+  { href: '/agents',  label: '에이전트', icon: Bot },
+  { href: '/reports', label: '에이전트 일지', icon: ClipboardList },
   ...(SHOW_NOTICES ? [NOTICES_NAV] : []),
 ];
 
-/** 로그인 전용 메뉴 — authenticated 시에만 추가. (에이전트·일지는 2026-07-06 로그인 전용 전환) */
+/** 로그인 전용 메뉴 — authenticated 시에만 추가. */
 export const AUTH_NAV: NavItem[] = [
-  { href: '/agents',  label: '에이전트', icon: Bot },
-  { href: '/reports', label: '에이전트 일지', icon: ClipboardList },
   { href: '/home',    label: '도구함',   icon: Wrench },
   { href: '/account', label: '마이페이지', icon: UserCircle },
 ];

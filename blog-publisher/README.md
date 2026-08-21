@@ -2,7 +2,7 @@
 
 # blog-publisher
 
-**AI 에이전트 32마리가 매일 콘텐츠를 만드는 한국어 자동발행 파이프라인**
+**AI 에이전트 45마리가 매일 콘텐츠를 만드는 한국어 자동발행 파이프라인**
 
 사람이 손대지 않아도 매일 블로그 3편·유튜브 쇼츠·인스타 카드뉴스 2편이 나갑니다.<br>
 핵심은 "많이 만드는 것"이 아니라 **못 만든 걸 내보내지 않는 것** — 16종 게이트와 검증자 5명이 막습니다.
@@ -70,8 +70,11 @@ cd thundo-agent-public/blog-publisher
 npm install                              # 런타임 의존성 1개
 
 RUN_MODE=mock node scripts/run-lion.mjs  # 일일 런 1회 — 발행 3건까지
-npm run smoke                            # 스모크 19종
+npm test                                 # 전체 49종 (순차 — 상태를 공유해 병렬은 거짓 red)
+npm run smoke                            # 종단 스모크만
 npm run gate <파일.md>                    # 게이트 16종 일괄
+npm run typecheck                        # JSDoc 기반 타입 검사
+npm run lint                             # 결함 탐지 규칙
 ```
 
 실제 수집만 켜고 싶으면 (LLM·발행은 여전히 mock):
@@ -109,7 +112,7 @@ COLLECT_LIVE=1 RUN_MODE=mock node scripts/run-lion.mjs
 
 ---
 
-## 에이전트 32마리
+## 에이전트 45마리
 
 <table>
 <tr><th align="left">팀</th><th align="left">구성</th></tr>
@@ -143,6 +146,35 @@ COLLECT_LIVE=1 RUN_MODE=mock node scripts/run-lion.mjs
 
 ---
 
+## 코드를 지탱하는 층
+
+채널이 넷이라 같은 일을 네 번 복사하기 쉽습니다. 실제로 그랬고, 그걸 걷어낸 결과가 지금 구조입니다.
+
+**`scripts/kernel/` 은 부작용이 없습니다.** `fs`·`child_process`·`Date` 를 import 하지 않고, 입력만 보고 값을 냅니다. 그래서 프로세스를 띄우지 않고 밀리초 단위로 테스트되고, 네 채널이 같은 판정을 공유합니다. 한국어 형태소 처리 610줄은 원래 cron 진입점 안에 갇혀 있었습니다 — 재사용 가치가 가장 높은 코드가 가장 테스트하기 어려운 곳에 있었던 셈입니다.
+
+**LLM 호출 통로는 하나입니다.** `lib/claude-runner.mjs` 가 재시도·백오프·실패 분류·한도 조기포기를 전부 맡습니다. 무엇보다 **구독 인증 강제**가 여기 있습니다 — `claude` 는 env 에 `ANTHROPIC_API_KEY` 가 있으면 종량제로 과금하고 없으면 구독 로그인을 씁니다. 예전에는 호출부마다 "키를 지우고 부르라"는 한 줄을 기억해야 했고(20개 파일), 새 호출부가 빠뜨리면 **조용히 과금**됐습니다. 지금은 통로가 하나라 거기서 막고, 그 장치를 빼면 계약 테스트가 즉시 실패합니다.
+
+**게이트는 프로세스가 아니라 함수입니다.** 예전에는 게이트 하나를 부르려고 node 프로세스를 spawn 하고 stdout 을 파싱했습니다. 판정(`evaluate`)과 CLI 껍데기를 나눠 함수 호출로 바꿨습니다 — 외부 계약(stdout JSON 1줄 + exit 0/1/2)은 그대로라 셸·크론은 하나도 바뀌지 않았습니다.
+
+**설정은 코드에 복제하지 않습니다.** 게이트가 `config/pipeline.json` 을 못 읽으면 코드에 박아둔 기본값으로 조용히 넘어가던 것을 없앴습니다. 이제 던집니다 — 초안은 폐기되지만 **옛 기준으로 발행되지는 않습니다.**
+
+**중복 검사는 서명을 캐시합니다.** 발행물이 쌓일수록 느려져 게이트 상한(60초)을 넘기던 것을, 산출식은 그대로 두고 서명만 저장해 해결했습니다(61초 → 0.3초). 값이 바뀌면 중복 판정이 바뀌므로 산출식은 손대지 않습니다.
+
+---
+
+## 회귀를 어떻게 막나
+
+바꿔도 되는 코드가 되려면 "안 망가졌다"를 증명할 수 있어야 합니다.
+
+| 장치 | 무엇을 |
+|---|---|
+| `npm test` | 49종 **순차** 실행. 테스트들이 `state/`·`runs/`·예산을 공유해 병렬은 거짓 red 를 만듭니다. 제외 항목이 있으면 **이유와 함께 매번 출력**합니다 — 조용히 빠지면 "다 통과"로 오독됩니다 |
+| `npm run typecheck` | JSDoc 기반 타입 검사. 전체를 한 번에 켜면 수백 건이 쏟아져 아무도 안 보게 되므로 **`kernel`·`lib`·`gates` 부터** 켜고, 아직 안 보는 범위를 `tsconfig.json` 주석에 명시했습니다 |
+| `npm run lint` | 결함 탐지 최소 규칙. 등급은 유명세가 아니라 **이 저장소에서 실제로 무엇을 잡았는지**로 정했습니다(진양성 0인 규칙은 warn 으로 내렸습니다) |
+| CI | push·PR 마다 위 셋을 전부 실행합니다. **크리덴셜을 주지 않아** "크리덴셜 없음 = 경고 후 정상 종료" 계약도 함께 검증됩니다 |
+
+---
+
 ## 설계에서 지키는 것
 
 **감사로그는 append-only 해시체인입니다.** `.omc/audit/audit-log.jsonl` — 과거 기록을 고치면 체인이 깨집니다. `npm run audit:verify` 로 검증합니다.
@@ -171,9 +203,16 @@ COLLECT_LIVE=1 RUN_MODE=mock node scripts/run-lion.mjs
 
 ```
 scripts/
-├── run-lion.mjs         # 메인 오케스트레이터
-├── gates/               # 결정론 품질 게이트 16종
-├── lib/                 # config · log · mock-llm · observed-target
+├── run-lion.mjs         # 메인 오케스트레이터 (STEP 별 함수로 분해)
+├── kernel/              # 순수 도메인 — 부작용 없음, fs·child_process·Date 미사용
+│   ├── korean.mjs       #   형태소·조사·키워드·제목 축약
+│   ├── markdown.mjs     #   frontmatter·코드·HTML 제거 · 한글 음절 수
+│   ├── clock.mjs        #   KST 날짜·시 — 전부 시계를 주입받는다
+│   ├── minhash.mjs      #   4-gram MinHash · Jaccard
+│   ├── lifecycle.mjs    #   수명주기 상태 전이표
+│   └── llm-failure.mjs  #   claude 실패 분류
+├── gates/               # 결정론 품질 게이트 16종 (evaluate + CLI 껍데기)
+├── lib/                 # 어댑터 — claude-runner(호출 단일 통로) · dup-index · config · log
 ├── reddit/              # Reddit RSS + HN Algolia 수집
 ├── seo/                 # GSC 폐루프 · 네이버 순위추적
 ├── shorts/              # 유튜브 쇼츠 (produce.mjs 공용 코어)
@@ -181,7 +220,7 @@ scripts/
 ├── cardnews/            # 인스타 카드뉴스 (원문대조 인용게이트)
 ├── report/              # 일일 브리핑 · 관측 에이전트
 ├── watchdog/            # 예산 · killswitch · lock · 파이프라인 자가복구
-└── test/                # smoke 19 · 채널별 테스트 스크립트 47개
+└── test/                # npm test 49종 (node:test 단위 + 채널별 스모크)
 
 config/     JSON 설정        published/  발행 완료 마크다운
 state/      런타임 상태       benchmark/  양품 앵커 33편 · 부정 앵커 11편

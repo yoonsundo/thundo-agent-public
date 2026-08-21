@@ -28,14 +28,13 @@ async function requireLogin(req: NextRequest, pathname: string) {
 export default async function middleware(req: NextRequest, event: NextFetchEvent) {
   const { pathname } = req.nextUrl;
 
-  // ── /agents, /reports — 로그인 필요 (2026-07-06 전환). 통과 시 아래 PV 집계로 계속. ──
-  if (
-    pathname === '/agents' || pathname.startsWith('/agents/')
-    || pathname === '/reports' || pathname.startsWith('/reports/')
-  ) {
-    const res = await requireLogin(req, pathname);
-    if (res) return res;
-  }
+  // ── /agents, /reports — 2026-08-21 다시 **공개**로 전환(2026-07-06 로그인 전용에서 되돌림). ──
+  // 공개 전 실제 렌더 내용을 훑어 확인했다: 크리덴셜·이메일·서버 IP·거래처 정보 없음.
+  // 경영회의에 운영 실패가 솔직하게 적히지만(예: "감사가 깨졌을 수도"), 그것을 숨기지 않는 것이
+  // 이 시스템의 증거라고 판단했다(사용자 결정). 사람 판단이 필요한 안건과 승인은 여전히
+  // /admin/board 에서만 다룬다 — 공개되는 것은 **읽기**뿐이다.
+  //
+  // ⚠ 이 두 경로에 새 정보를 실을 때는 공개 화면임을 전제로 볼 것.
 
   // ── 트래픽 PV 집계 — 추적 네임스페이스(/, /blog + 로그인 게이트 통과한 /reports, /agents) early-return. ──
   // 인증/access-code 분기 이전에 반환해 fallthrough(/saju/gate 리다이렉트)를 원천 차단.

@@ -308,9 +308,22 @@ ok('예산 원장에 카드뉴스 라벨이 계상됐다',
 // 없으면 갤러리는 배포 후 **영구히 빈 페이지**가 되고, 그 사실은 월요일 발행 전까지 아무도
 // 모른다(발행이 0건이라 빈 게 정상으로 보인다).
 console.log('\n  사이트 갤러리 기록');
-eq('발행 1건당 정확히 1행', siteRows.length, 1);
+// ⚠ 계약이 바뀌었다(2026-08-21 반자동 발행 전환). 인스타에 음악을 넣을 수 없어 자동 발행을
+//    포기했고, 파이프라인은 **캡션 확정 직후 status='ready' 로 먼저 기록**한다. 그래야
+//    `publish.enabled=false` 인 지금도 관리자 화면(/admin/cardnews)에 올릴 대상이 뜬다.
+//    자동 발행까지 성공하면 같은 post_id 로 한 번 더 upsert 해 published 로 덮는다.
+//    → 호출은 2회지만 **DB 행은 여전히 1개**다(post_id 가 기본키).
+eq('기록 호출은 2회 — ready 먼저, 발행 성공 뒤 published', siteRows.length, 2);
+eq('두 번 다 같은 post_id 라 DB 행은 하나', new Set(siteRows.map(r => r?.post_id)).size, 1);
 {
-  const row = siteRows[0];
+  const ready = siteRows[0];
+  eq('1회차는 ready', ready?.status, 'ready');
+  eq('1회차엔 media_id 가 없다(아직 안 올림)', ready?.media_id, null);
+  ok('1회차에도 슬라이드는 있다 — 관리자가 올릴 대상이므로',
+    Array.isArray(ready?.slide_urls) && ready.slide_urls.length > 0, String(ready?.slide_urls?.length));
+
+  const row = siteRows[siteRows.length - 1];
+  eq('최종 행은 published', row?.status, 'published');
   eq('post_id', row?.post_id, R.post_id);
   eq('media_id 가 채워졌다', row?.media_id, 'media-dryrun-1');
   ok('표지 이미지가 있다', typeof row?.cover_url === 'string' && row.cover_url.length > 0, String(row?.cover_url));

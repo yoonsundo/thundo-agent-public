@@ -12,6 +12,24 @@ describe('navItemsFor — 권한별 노출', () => {
     expect(items.map((i) => i.href)).toEqual(PUBLIC_NAV.map((i) => i.href));
   });
 
+  /**
+   * ⚠ 위 테스트는 PUBLIC_NAV 와 **상대 비교**라, 항목을 공개↔로그인 사이에서 옮겨도 통과한다.
+   * 실제로 /agents·/reports 를 공개로 옮겼는데 20건이 그대로 초록이었다(2026-08-21).
+   * 무엇이 공개여야 하는지는 값으로 못 박아야 조용한 변경이 드러난다.
+   */
+  it('에이전트·에이전트 일지는 비로그인에게도 보인다', () => {
+    const hrefs = navItemsFor({ isLoggedIn: false, isAdmin: false }).map((i) => i.href);
+    expect(hrefs, '/agents 가 비로그인 메뉴에서 사라졌다').toContain('/agents');
+    expect(hrefs, '/reports 가 비로그인 메뉴에서 사라졌다').toContain('/reports');
+  });
+
+  it('도구함·마이페이지는 여전히 로그인 뒤에 있다', () => {
+    const hrefs = navItemsFor({ isLoggedIn: false, isAdmin: false }).map((i) => i.href);
+    expect(hrefs).not.toContain('/home');
+    expect(hrefs).not.toContain('/account');
+    expect(hrefs).not.toContain('/admin');
+  });
+
   it('로그인 사용자는 공개 + 로그인 전용을 본다', () => {
     const items = navItemsFor({ isLoggedIn: true, isAdmin: false });
     expect(items).toHaveLength(PUBLIC_NAV.length + AUTH_NAV.length);

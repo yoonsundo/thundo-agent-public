@@ -38,3 +38,31 @@ create trigger trg_cardnews_posts_updated_at before update on public.cardnews_po
 
 -- 백필 없음 — 2026-07-31 기준 발행 확정된 카드뉴스가 0건이라 넣을 사실이 없다.
 -- 첫 발행분부터 파이프라인이 upsert 한다. 그때까지 /cardnews 는 빈 상태를 렌더한다.
+
+-- ── 반자동 발행 전환 (2026-08-21) ────────────────────────────────────────────
+-- 음악을 넣을 수 없어 완전 자동 발행을 포기했다. 파이프라인은 **제작·호스팅까지만** 하고,
+-- 관리자가 /admin/cardnews 에서 확인한 뒤 인스타에 직접 올리고 공개로 전환한다.
+--
+-- 왜 active 를 재활용하지 않고 status 를 새로 두나: active 는 "발행한 뒤 숨김"(소프트 삭제)
+-- 스위치다. 여기에 "아직 안 올림"까지 얹으면 두 상태가 한 칸에 눌려 구분이 사라진다 —
+-- 나중에 "왜 안 보이지?"의 답이 '숨김'인지 '미발행'인지 알 수 없게 된다.
+alter table public.cardnews_posts
+  add column if not exists status text not null default 'ready';
+
+-- ⚠ 백필은 **컬럼 추가 직후, 제약 걸기 전**에 한다. 기존 행은 구 자동발행 경로로 들어온 것이라
+--    이미 인스타에 올라가 있다 — 기본값 'ready' 로 두면 공개돼 있던 글이 갑자기 사라진다.
+update public.cardnews_posts
+   set status = 'published'
+ where status = 'ready'
+   and media_id is not null;      -- 인스타 media_id 가 있으면 실제로 올라간 것이다
+
+alter table public.cardnews_posts
+  drop constraint if exists cardnews_posts_status_chk;
+alter table public.cardnews_posts
+  add constraint cardnews_posts_status_chk check (status in ('ready', 'published'));
+
+-- 관리자 화면이 status 로 목록을 가른다.
+create index if not exists cardnews_posts_status_idx on public.cardnews_posts (status, published_at desc);
+
+comment on column public.cardnews_posts.status is
+  'ready=제작 완료·인스타 미게시(관리자 화면에만 보임) / published=관리자가 인스타에 올림(공개 /cardnews 노출). active 는 발행 뒤 숨김 스위치라 역할이 다르다.';

@@ -10,7 +10,24 @@ import { isTransientClaudeError } from '../lib/claude-cli.mjs';
 const DATE = process.argv[2] || new Date().toISOString().slice(0, 10);
 
 // ── 16 에이전트 정의(순서 = 보고 순서) ──
+/**
+ * 에이전트 로스터.
+ *
+ * 🔴 예전엔 **블로그팀 16마리만** 여기 있었고 화면에도 `가동 14/16` 으로 나갔다.
+ *    회사에는 45마리가 있고 채널이 넷이다 — 16 을 분모로 쓰면 "우리 회사는 16명" 이라고
+ *    말하는 셈이다(2026-08-21 사용자 지적).
+ *
+ * `cadence` 가 분모를 정한다. 전부를 분모에 넣으면 이번엔 반대로 왜곡된다 —
+ * 개발팀 9인은 요청이 있을 때만 돌고, 카드뉴스 5인은 채널이 꺼져 있다.
+ * 안 도는 게 정상인 에이전트를 "미가동" 으로 세면 매일 빨간 숫자가 뜬다.
+ *
+ *   daily     매일 도는 게 정상 — 분모에 들어간다
+ *   periodic  주기적(주1회·시간대별) — 오늘 흔적이 있으면 가동, 없어도 이상 아님
+ *   on-demand 요청 시에만 — 분모에서 뺀다
+ *   paused    채널이 꺼져 있음 — 분모에서 빼고 사유를 남긴다
+ */
 const AGENTS = [
+  // ── 블로그 발행팀 ────────────────────────────────────────────────────────
   { id: 'lion', role: '오케스트레이션', desc: 'CEO 오케스트레이터·통신허브' },
   { id: 'cheetah', role: '수집', desc: '트렌드 주제 수집' },
   { id: 'owl', role: '수집', desc: '심층·근거 수집' },
@@ -26,8 +43,48 @@ const AGENTS = [
   { id: 'penguin', role: '발행', desc: '발행' },
   { id: 'elephant', role: '거버넌스', desc: '거버넌스·자가진화' },
   { id: 'crane', role: '거버넌스', desc: '의사·건강검진' },
-  { id: 'meerkat', role: '거버넌스', desc: '관제탑·위키 감사' },
-];
+  { id: 'meerkat', role: '거버넌스', desc: '관제탑·위키 감사', cadence: 'periodic' },
+  { id: 'hummingbird', role: '거버넌스', desc: 'SEO/AEO 방법론 수집', team: 'blog', cadence: 'periodic' },
+
+  // ── 호기심 쇼츠팀 (cron 10·18시) ─────────────────────────────────────────
+  { id: 'raccoon',     role: '발굴',   desc: '반전 사실 아이디어 발굴', team: 'curiosity' },
+  { id: 'lynx',        role: '선정',   desc: '반전·호기심 best-pick',   team: 'curiosity' },
+  { id: 'badger',      role: '검증',   desc: '팩트체크(차단권만)',      team: 'curiosity' },
+  { id: 'nightingale', role: '작가',   desc: '카드 대본·아트프롬프트',  team: 'curiosity' },
+  { id: 'fennec',      role: '오케',   desc: '호기심 채널 총괄',        team: 'curiosity' },
+
+  // ── 인스타 카드뉴스팀 ────────────────────────────────────────────────────
+  //    publish.enabled=false + cron 미등록 → 도는 게 아니라 **멈춰 있는 것**이다.
+  { id: 'heron',    role: '발굴',   desc: '고전문학 구절 발굴',  team: 'cardnews', cadence: 'paused' },
+  { id: 'deer',     role: '선정',   desc: '공명·저장욕구 채점',  team: 'cardnews', cadence: 'paused' },
+  { id: 'hedgehog', role: '검증',   desc: '인용 맥락 검증',      team: 'cardnews', cadence: 'paused' },
+  { id: 'robin',    role: '작가',   desc: '카드 7장 + 캡션',     team: 'cardnews', cadence: 'paused' },
+  { id: 'firefly',  role: '오케',   desc: '카드뉴스 총괄',       team: 'cardnews', cadence: 'paused' },
+
+  // ── 팀장 (매일 경영회의) ─────────────────────────────────────────────────
+  { id: 'dolphin', role: '팀장', desc: '유튜브 — CMO·CDO',  team: 'lead' },
+  { id: 'falcon',  role: '팀장', desc: '블로그 — CPO·CCO',  team: 'lead' },
+  { id: 'panther', role: '팀장', desc: '인스타 — CBO·CLO',  team: 'lead' },
+  { id: 'rhino',   role: '팀장', desc: '개발 — CTO·CISO',   team: 'lead' },
+
+  // ── 관제 (주기·읽기전용) ─────────────────────────────────────────────────
+  { id: 'parrot',     role: '관제', desc: '외부 dev 프로젝트 브리핑', team: 'ops', cadence: 'periodic' },
+  { id: 'woodpecker', role: '관제', desc: '인프라 관제',              team: 'ops', cadence: 'periodic' },
+  { id: 'mole',       role: '관제', desc: '조회수·GSC 인사이트',      team: 'ops', cadence: 'periodic' },
+  { id: 'sheepdog',   role: '관제', desc: '파이프라인 자가복구',      team: 'ops', cadence: 'periodic' },
+  { id: 'spider',     role: '관제', desc: '크롤 타겟 정찰',           team: 'ops', cadence: 'on-demand' },
+
+  // ── 개발팀 (요청 시에만) ─────────────────────────────────────────────────
+  { id: 'orchestrator',      role: '개발', desc: '팀 지휘',        team: 'dev', cadence: 'on-demand' },
+  { id: 'planner',           role: '개발', desc: '스펙 분해',      team: 'dev', cadence: 'on-demand' },
+  { id: 'architect',         role: '개발', desc: '구조 설계',      team: 'dev', cadence: 'on-demand' },
+  { id: 'designer',          role: '개발', desc: 'UI 설계',        team: 'dev', cadence: 'on-demand' },
+  { id: 'coder',             role: '개발', desc: '구현',           team: 'dev', cadence: 'on-demand' },
+  { id: 'tester',            role: '개발', desc: '빌드·E2E 검증',  team: 'dev', cadence: 'on-demand' },
+  { id: 'security-reviewer', role: '개발', desc: '보안 검토',      team: 'dev', cadence: 'on-demand' },
+  { id: 'verifier',          role: '개발', desc: '최종 게이트',    team: 'dev', cadence: 'on-demand' },
+  { id: 'devops',            role: '개발', desc: '배포·롤백',      team: 'dev', cadence: 'on-demand' },
+].map(a => ({ team: 'blog', cadence: 'daily', ...a }));
 
 const env = (p, k) => { try { const m = readFileSync(p, 'utf8').match(new RegExp('^' + k + '=(.+)', 'm')); return m ? m[1].trim().replace(/["']/g, '') : ''; } catch { return ''; } };
 const SUPA_URL = process.env.SUPABASE_URL || env('.env', 'SUPABASE_URL') || env('repo/thundorun/web/.env.local', 'NEXT_PUBLIC_SUPABASE_URL');
@@ -176,7 +233,7 @@ async function addReflections(agents, summary, ctx = {}) {
   const prompt = `다음은 오늘(${DATE}) blog-publisher 에이전트 회사의 활동 기록이다. 작업한 각 에이전트에 대해 짧은 회고를 작성하라. 각 항목 1문장, 기록에 근거해 구체적으로, 한국어. 막힌 부분/어려움이 없으면 "특이사항 없음". 출력은 JSON만(코드펜스·설명 금지):
 {"<id>":{"결과요약":"...","느낀점":"...","어려웠던점":"...","막힌부분":"...","보완한점":"...","발전할부분":"..."}}
 
-[오늘 요약] 발행 ${summary.published}편, 가동 ${summary.active_agents}/16, 진화 ${(ctx.evolve || []).map(e => e.verdict).join(',') || '없음'}.
+[오늘 요약] 발행 ${summary.published}편, 가동 ${summary.active_agents}/${summary.expected_agents}, 진화 ${(ctx.evolve || []).map(e => e.verdict).join(',') || '없음'}.
 [활동 기록]
 ${JSON.stringify(facts)}`;
   // 일시적 API 끊김(Connection closed·timeout 등)에 회고가 통째로 빠지지 않도록 최대 3회 재시도.
@@ -318,13 +375,106 @@ async function build() {
     }
   }
 
-  // ── 16 에이전트 구조화 ──
+  // ── 블로그 밖 팀의 가동 감지 ──────────────────────────────────────────────
+  //
+  // 블로그팀은 위에서 파이프라인 산출물로 감지한다. 다른 팀은 각자의 상태 파일에
+  // 흔적을 남기므로 거기서 읽는다. **흔적이 없으면 안 돌린 것으로 둔다** —
+  // 돌았다고 가정하면 "가동 45/45" 같은 거짓 초록이 된다.
+  {
+    const todayJsonl = (path, key = 'date') =>
+      readJsonl(path).filter(r => String(r?.[key] ?? r?.at ?? '').startsWith(DATE));
+
+    // 호기심 쇼츠 — 인덱스에 오늘 자 항목이 있으면 5단계가 전부 돈 것이다(JIT 제작 체인).
+    try {
+      const idx = JSON.parse(readFileSync('state/shorts-curiosity-index.json', 'utf8'));
+      const today = Object.entries(idx).filter(([, v]) => String(v?.at || '').startsWith(DATE));
+      if (today.length) {
+        const subjects = today.map(([, v]) => v.subject).filter(Boolean).slice(0, 2).join(' · ');
+        const st = today.map(([, v]) => v.status).join(',');
+        for (const [id, what, why] of [
+          ['raccoon',     '반전 사실 발굴',   '백로그 보충'],
+          ['lynx',        'best-pick 선정',   '반전·호기심 점수'],
+          ['badger',      '팩트체크',         '통과분만 제작'],
+          ['nightingale', '카드 대본 작성',   '30~60초 구성'],
+          ['fennec',      '일일 런 총괄',     '선정→검증→제작→큐'],
+        ]) push(id, { where: 'state/shorts-curiosity-index.json', what, why, how: `${today.length}건(${st})${subjects ? ' — ' + subjects : ''}` });
+      }
+    } catch { /* 인덱스 부재·손상은 '안 돌았다'로 둔다 */ }
+
+    // 카드뉴스 — 채널이 꺼져 있어 보통 비어 있다. 돌았으면 그때만 기록한다.
+    for (const r of todayJsonl('state/cardnews/runs.jsonl')) {
+      for (const [id, what] of [
+        ['heron', '구절 발굴'], ['deer', 'best-pick 선정'], ['hedgehog', '인용 검증'],
+        ['robin', '카드 7장 대본'], ['firefly', '일일 런 총괄'],
+      ]) push(id, { where: 'state/cardnews/runs.jsonl', what, why: `slot ${r.slot ?? '-'}`, how: `결과 ${r.outcome ?? '-'}` });
+    }
+
+    // 팀장 4인 — 경영회의가 열렸으면 넷 다 브리핑한 것이다.
+    for (const b of todayJsonl('state/board/decisions.jsonl')) {
+      const n = Array.isArray(b.results) ? b.results.length : 0;
+      for (const id of ['dolphin', 'falcon', 'panther', 'rhino'])
+        push(id, { where: 'state/board/decisions.jsonl', what: '경영회의 브리핑',
+          why: b.held ? `결론 미확정 — ${b.held}` : '채널 성과 보고·개선 제안',
+          how: `제안 ${b.proposals ?? 0}건 · 결정 ${n}건` });
+    }
+
+    // 관제 — 각자 오늘 자 리포트나 상태 파일을 남긴다.
+    for (const [id, file, what] of [
+      ['mole',       `docs/reports/insight/${DATE}.md`, '조회수·GSC 인사이트 브리핑'],
+      ['woodpecker', `docs/reports/infra/${DATE}.md`,   '인프라 이상 징후 브리핑'],
+    ]) if (existsSync(file)) push(id, { where: file, what, why: '읽기전용 관측', how: '브리핑 발송' });
+
+    // ⚠ parrot 의 상태 파일명에는 **관찰 대상 이름이 들어간다.** 경로를 코드에 박으면
+    //    거래처 식별자가 저장소에 남는다(`scan:thirdparty` 가 실제로 잡아냈다).
+    //    그래서 파일명을 적지 않고 접두어로 찾는다.
+    const findState = (prefix) => {
+      try { return readdirSync('state').filter(f => f.startsWith(prefix) && f.endsWith('.json')).map(f => `state/${f}`); }
+      catch { return []; }
+    };
+    for (const [id, files, what] of [
+      ['parrot',   findState('parrot-'),          '외부 dev 프로젝트 브리핑'],
+      ['sheepdog', ['state/crane-health.json'],   '파이프라인 점검·자가복구'],
+    ]) {
+      for (const file of files) {
+        try {
+          const st = JSON.parse(readFileSync(file, 'utf8'));
+          const at = String(st?.at ?? st?.checked_at ?? st?.updated_at ?? '');
+          // 경로를 그대로 기록하면 브리핑 문서에 관찰 대상 이름이 남는다 → 디렉터리까지만.
+          if (at.startsWith(DATE)) { push(id, { where: 'state/', what, why: '주기 점검', how: at }); break; }
+        } catch { /* 없으면 안 돈 것 */ }
+      }
+    }
+  }
+
+  // ── 에이전트 구조화 ──────────────────────────────────────────────────────
   const agents = AGENTS.map(a => ({ ...a, did_work: rec[a.id].length > 0, records: rec[a.id] }));
+
+  // 분모는 **오늘 도는 게 정상인 에이전트**다. 요청 시에만 도는 개발팀 9인과
+  // 채널이 꺼진 카드뉴스 5인을 분모에 넣으면 매일 빨간 숫자가 뜨고, 그러면 아무도 안 본다.
+  // 주기(periodic)는 오늘 안 돌아도 이상이 아니므로 분모에서 뺀다 — 돌았으면 가동에 더한다.
+  const expected = agents.filter(a => a.cadence === 'daily');
+  // 분자는 **분모 안에서** 센다. 주기·요청 에이전트가 오늘 돌았다고 분자에 더하면
+  // `26/24` 처럼 분자가 분모를 넘어 고장난 숫자가 된다(2026-08-21 실제로 그랬다).
+  // 그들은 따로 `extra_active_agents` 로 보여 준다 — 돌았다는 사실 자체는 유의미하다.
+  const activeExpected = expected.filter(a => a.did_work);
+  const extraActive = agents.filter(a => a.did_work && a.cadence !== 'daily');
   const summary = {
     published: pub.length, cron: cronLog,
     writers: { beaver: pub.filter(p => p.writer === 'beaver').length, fox: pub.filter(p => p.writer === 'fox').length, wolf: pub.filter(p => p.writer === 'wolf').length },
     evolve: evolve.map(e => e.verdict), images: pub.filter(p => p.imageBy).length, audit: audit.length,
-    active_agents: agents.filter(a => a.did_work).length, idle_agents: agents.filter(a => !a.did_work).map(a => a.id),
+    active_agents: activeExpected.length,
+    extra_active_agents: extraActive.map(a => a.id),   // 주기·요청인데 오늘 돈 것
+    // 오늘 돌기로 되어 있는데 안 돈 것만 '미가동'이다. on-demand·paused 를 여기 섞으면
+    // 매일 같은 이름 14개가 미가동으로 뜨고 진짜 이상을 가린다.
+    idle_agents: expected.filter(a => !a.did_work).map(a => a.id),
+    expected_agents: expected.length,
+    roster_agents: agents.length,
+    agents_by_cadence: {
+      daily:       expected.length,
+      periodic:    agents.filter(a => a.cadence === 'periodic').length,
+      'on-demand': agents.filter(a => a.cadence === 'on-demand').length,
+      paused:      agents.filter(a => a.cadence === 'paused').length,
+    },
     pipeline,
   };
 
@@ -356,7 +506,7 @@ async function build() {
 
   // ── ② 마크다운(아카이브, 16 전원) ──
   const L = [`# 🦁 에이전트 일일 업무보고 — ${DATE}`, '', `> 16 에이전트 전원 육하원칙. 자동생성 \`scripts/report/daily-brief.mjs\` · DB \`agent_reports\` · 방법론 [[agent-reporting]].`, ''];
-  L.push(`## 오늘 한눈에`, `- 발행 **${summary.published}편** · 자율 cron ${cronLog ? '가동✅' : '미가동'} · 가동 에이전트 ${summary.active_agents}/16`, `- 작가 beaver ${summary.writers.beaver}·fox ${summary.writers.fox}·wolf ${summary.writers.wolf} · 진화 ${summary.evolve.join(',') || '없음'} · 이미지 ${summary.images}편`, '');
+  L.push(`## 오늘 한눈에`, `- 발행 **${summary.published}편** · 자율 cron ${cronLog ? '가동✅' : '미가동'} · 가동 에이전트 ${summary.active_agents}/${summary.expected_agents}`, `- 작가 beaver ${summary.writers.beaver}·fox ${summary.writers.fox}·wolf ${summary.writers.wolf} · 진화 ${summary.evolve.join(',') || '없음'} · 이미지 ${summary.images}편`, '');
   // ── SEO 섹션 ──
   if (!seoSummary || !seoSummary.latest) {
     L.push(`## SEO`, `- GSC 미연동 (state/seo-metrics.jsonl 없음 — gsc-collect.mjs 먼저 실행 필요)`, '');
@@ -404,10 +554,10 @@ async function build() {
   // ── ③ index ──
   const idxFile = 'docs/work-history/index.md';
   let idx = existsSync(idxFile) ? readFileSync(idxFile, 'utf8') : '# 업무 히스토리 (일일 에이전트 보고)\n\n> 매일 자동 생성되는 육하원칙 기반 에이전트 업무보고. DB(agent_reports)+문서. 방법론 [[agent-reporting]].\n\n';
-  const line = `- [${DATE}](${DATE}.md) — 발행 ${pub.length}편, 가동 ${summary.active_agents}/16, 진화 ${summary.evolve.join(',') || '없음'}`;
+  const line = `- [${DATE}](${DATE}.md) — 발행 ${pub.length}편, 가동 ${summary.active_agents}/${summary.expected_agents}, 진화 ${summary.evolve.join(',') || '없음'}`;
   if (!idx.includes(`(${DATE}.md)`)) { const p = idx.split('\n\n'); idx = [p[0], p[1], line, p.slice(2).join('\n\n')].filter(Boolean).join('\n\n'); writeFileSync(idxFile, idx, 'utf8'); }
 
-  console.log(`[daily-brief] ✅ ${DATE}: 발행 ${pub.length}, 가동 ${summary.active_agents}/16 → DB+문서`);
+  console.log(`[daily-brief] ✅ ${DATE}: 발행 ${pub.length}, 가동 ${summary.active_agents}/${summary.expected_agents} → DB+문서`);
 }
 
 build().catch(e => { console.error('[daily-brief] 오류:', e.message); process.exit(1); });

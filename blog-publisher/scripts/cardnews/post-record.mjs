@@ -54,6 +54,11 @@ export function toRow(post) {
     generator_effective: post.generator_effective ?? post.generator ?? '',
     published_at: post.published_at ?? new Date().toISOString(),
     active: true,
+    // ⚠ 공개 여부는 **인스타에 실제로 올라갔는지**로 정한다(2026-08-21 반자동 발행 전환).
+    //    음악을 넣을 수 없어 자동 발행을 포기했고, 파이프라인은 제작·호스팅까지만 한다.
+    //    media_id 가 있으면 Graph API 로 게시된 것이라 published, 없으면 관리자가 /admin/cardnews
+    //    에서 직접 올려야 하므로 ready 다. `active` 는 발행 뒤 숨김 스위치라 역할이 다르다.
+    status: post.published_media_id ? 'published' : 'ready',
   };
 }
 
@@ -69,7 +74,13 @@ export async function recordPublishedPost(postId, { fetchImpl = fetch, post = nu
   const p = post || getPost(postId);
   const row = toRow(p);
   if (!row) return { ok: false, error: `포스트를 찾을 수 없다: ${postId}` };
-  if (!row.media_id) return { ok: false, error: 'media_id 없음 — 발행 확정 전에는 기록하지 않는다' };
+  // ⚠ 예전에는 media_id 가 없으면 기록을 거부했다("발행 확정 전에는 안 넣는다").
+  //    반자동 전환(2026-08-21) 이후 **그게 정상 경로**다 — 파이프라인은 제작·호스팅까지만 하고
+  //    인스타 게시는 관리자가 한다. 그래서 거부 대신 status='ready' 로 넣어 관리자 화면에 띄운다.
+  //    대신 **슬라이드가 실제로 호스팅됐는지**를 본다. URL 이 없으면 관리자가 올릴 것이 없다.
+  if (!row.slide_urls.length) {
+    return { ok: false, error: '호스팅된 슬라이드 URL 이 없다 — 올릴 것이 없으므로 기록하지 않는다' };
+  }
 
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;

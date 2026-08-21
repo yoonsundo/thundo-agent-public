@@ -151,6 +151,17 @@ export interface ReportSummary {
   images: number;
   active_agents: number;
   idle_agents: string[];
+  /**
+   * 오늘 도는 게 정상인 에이전트 수 — 분모다.
+   * 전체 로스터(45)가 아니라 `cadence: daily` 만 센다. 요청 시에만 도는 개발팀과
+   * 채널이 꺼진 카드뉴스를 분모에 넣으면 매일 빨간 숫자가 뜬다.
+   * 과거 행에는 없으므로 선택 필드다.
+   */
+  expected_agents?: number;
+  /** 주기·요청 스케줄인데 오늘 실제로 돈 에이전트 — 분자에 넣으면 분모를 넘는다. */
+  extra_active_agents?: string[];
+  /** 전체 로스터 수(참고용). */
+  roster_agents?: number;
   audit?: number;
   pipeline?: PipelineSummary;
   board?: BoardMeeting;

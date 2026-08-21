@@ -149,6 +149,29 @@ export default async function ReportsPage({
   const activeCount = summary.active_agents ?? report.agents.filter((a) => a.did_work).length;
   const idleList = summary.idle_agents ?? [];
 
+  /**
+   * 분모는 **오늘 도는 게 정상인 에이전트** 수다.
+   *
+   * 예전에는 `report.agents.length`(=블로그팀 16)를 썼다. 회사에는 45마리가 있고 채널이
+   * 넷이라 `14/16` 은 "우리 회사는 16명" 이라고 말하는 셈이었다. 그렇다고 45를 분모로 두면
+   * 이번엔 반대로 왜곡된다 — 개발팀 9인은 요청이 있을 때만 돌고 카드뉴스 5인은 채널이
+   * 꺼져 있다. 안 도는 게 정상인 쪽을 미가동으로 세면 매일 빨간 숫자가 뜨고, 그러면 아무도
+   * 안 본다. 그래서 파이프라인이 `expected_agents` 를 함께 실어 보낸다.
+   *
+   * 이 필드가 없는 과거 행은 예전대로 `agents.length` 로 떨어진다(하위 호환).
+   */
+  const expectedAgents = summary.expected_agents ?? totalAgents;
+  const extraActive = summary.extra_active_agents ?? [];
+  const rosterAgents = summary.roster_agents ?? totalAgents;
+
+  const agentSub = [
+    extraActive.length > 0 ? `주기 +${extraActive.length}` : null,
+    idleList.length > 0
+      ? `미가동 ${idleList.slice(0, 2).join('·')}${idleList.length > 2 ? ` 외 ${idleList.length - 2}` : ''}`
+      : '전원 가동',
+    rosterAgents > expectedAgents ? `전체 ${rosterAgents}` : null,
+  ].filter(Boolean).join(' · ');
+
   const gateTotals = pipeline?.write.reduce(
     (acc, w) => ({ passed: acc.passed + w.gates_passed, total: acc.total + w.gates_total }),
     { passed: 0, total: 0 },
@@ -224,8 +247,8 @@ export default async function ReportsPage({
           />
           <KpiCard
             label="가동 에이전트"
-            value={`${activeCount}/${totalAgents}`}
-            sub={idleList.length > 0 ? `미가동: ${idleList.slice(0, 3).join('·')}${idleList.length > 3 ? '…' : ''}` : '전원 가동'}
+            value={`${activeCount}/${expectedAgents}`}
+            sub={agentSub}
           />
           <KpiCard
             label="통과 게이트"

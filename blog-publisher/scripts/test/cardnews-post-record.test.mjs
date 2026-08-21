@@ -9,10 +9,16 @@
  *      (다르면 PostgREST 가 400 을 내고 갤러리는 영원히 빈 채로 남는다 — 발행은 성공하므로
  *       런은 초록이고, 아무도 눈치채지 못한다)
  *   ② **퍼머링크를 지어내지 않는다** — Graph 가 준 값만 싣는다
- *   ③ 발행 확정 전(media_id 없음)에는 기록하지 않는다
+ *   ③ 올릴 것이 없으면(슬라이드 URL 부재) 기록하지 않는다 — media_id 부재는 이제
+ *      거부 사유가 아니라 status='ready'(관리자가 직접 올릴 건)를 뜻한다
  *
  * exit 0 = 전체 통과 / exit 1 = 1개 이상 실패.
  */
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 import { toRow, recordPublishedPost } from '../cardnews/post-record.mjs';
 
 let passN = 0, failN = 0;
@@ -22,12 +28,32 @@ const ok = (label, cond, detail = '') => {
 };
 const eq = (label, got, want) => ok(label, got === want, `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`);
 
-/** `web/supabase/cardnews_posts.sql` 의 컬럼(생성 컬럼 3개 제외). 손으로 맞춰야 한다. */
-const SQL_COLUMNS = [
-  'post_id', 'backlog_id', 'subject', 'problem', 'book', 'author', 'caption',
-  'cover_url', 'slide_urls', 'slide_sha256', 'media_id', 'permalink',
-  'generator', 'generator_effective', 'published_at', 'active',
-];
+/**
+ * `web/supabase/cardnews_posts.sql` 의 컬럼을 **SQL 에서 직접 뽑는다.**
+ *
+ * ⚠ 예전에는 이 목록을 손으로 적어 뒀다("손으로 맞춰야 한다"). 그러면 스키마가 바뀔 때마다
+ *   테스트가 거짓으로 빨개지거나(2026-08-21 status 추가 때 실제로 그랬다) 더 나쁘게는
+ *   **손으로 같이 고쳐서 드리프트를 덮는다.** 생산자(SQL)를 읽어야 진짜 계약이 된다.
+ * create table 본문 + 나중에 붙은 `alter table ... add column` 을 모두 본다 —
+ * 마이그레이션은 alter 로 들어오므로 create 만 보면 새 컬럼을 놓친다.
+ */
+function sqlColumns() {
+  const sqlPath = resolve(__dirname, '../../../repo/thundorun/web/supabase/cardnews_posts.sql');
+  const sql = readFileSync(sqlPath, 'utf8');
+  const cols = new Set();
+  const create = sql.match(/create table if not exists public\.cardnews_posts \(([\s\S]*?)\n\);/);
+  if (create) {
+    for (const line of create[1].split('\n')) {
+      const m = line.match(/^\s{2}([a-z0-9_]+)\s+/);
+      if (m) cols.add(m[1]);
+    }
+  }
+  for (const m of sql.matchAll(/add column if not exists\s+([a-z0-9_]+)\s/g)) cols.add(m[1]);
+  // 서버가 채우는 생성 컬럼은 파이프라인 행에 없다.
+  for (const g of ['created_at', 'updated_at']) cols.delete(g);
+  return [...cols];
+}
+const SQL_COLUMNS = sqlColumns();
 
 const POST = {
   post_id: 'cn-2026-08-01-5e1d513487',
@@ -132,13 +158,22 @@ console.log('\n[4] upsert 호출');
   eq('네트워크 예외도 던지지 않는다', boom.ok, false);
   ok('네트워크 사유', /ECONNRESET/.test(boom.error || ''), boom.error);
 
-  // 발행 확정 전에는 기록하지 않는다.
-  const early = await recordPublishedPost('cn-early', {
+  // ⚠ 계약이 바뀌었다(2026-08-21 반자동 발행 전환). 예전에는 media_id 가 없으면 기록을
+  //    거부했지만, 이제 **그게 정상 경로**다 — 파이프라인은 제작·호스팅까지만 하고 인스타
+  //    게시는 관리자가 한다. 대신 올릴 것이 실제로 있는지(슬라이드 URL)를 본다.
+  const noSlides = await recordPublishedPost('cn-early', {
     post: { post_id: 'cn-early' },
-    fetchImpl: async () => { throw new Error('media_id 없는데 네트워크를 열었다'); },
+    fetchImpl: async () => { throw new Error('슬라이드 없는데 네트워크를 열었다'); },
   });
-  eq('media_id 없으면 기록하지 않는다', early.ok, false);
-  ok('사유가 media_id', /media_id/.test(early.error || ''), early.error);
+  eq('호스팅된 슬라이드가 없으면 기록하지 않는다', noSlides.ok, false);
+  ok('사유가 슬라이드 부재', /슬라이드/.test(noSlides.error || ''), noSlides.error);
+
+  // media_id 가 없어도 슬라이드가 있으면 ready 로 기록한다 — 관리자 화면에 떠야 하기 때문.
+  const readyRow = toRow({ post_id: 'cn-ready', public_url: ['https://cdn.example/01.jpg'] });
+  eq('media_id 없으면 status=ready', readyRow.status, 'ready');
+  eq('media_id 있으면 status=published',
+    toRow({ post_id: 'cn-pub', public_url: ['https://cdn.example/01.jpg'], published_media_id: 'm1' }).status,
+    'published');
 
   if (prevUrl === undefined) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = prevUrl;
   if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
