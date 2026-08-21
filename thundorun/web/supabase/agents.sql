@@ -30,6 +30,11 @@ create trigger trg_agents_updated_at before update on public.agents
 -- 초기 시드: 블로그 자동발행 파이프라인 에이전트 16마리 (이미 있으면 무시)
 insert into public.agents (id, name, role, description, emoji, sort_order) values
   ('lion',     '라이언 (Lion)',       '오케스트레이터',        '매일 아침 발행 런 전체를 지휘하는 CEO. 수집부터 발행까지 모든 에이전트에게 일을 나눠주고, 문제가 생기면 스스로 복구합니다.', '🦁', 10),
+  -- 팀장(C레벨) 4인 — 2026-08-21 신설. 파이프라인을 실행하지 않고 매일 CEO와 경영회의를 연다.
+  ('falcon',   '팰컨 (Falcon)',       '블로그팀장 · CPO·CCO',  '높이 떠서 전체를 보는 눈. 블로그팀의 팀장으로 어떤 글을 만들지(CPO)와 그 글이 충분히 좋은지(CCO)를 함께 책임집니다. 매일 아침 CEO에게 발행·검색 성과를 브리핑하고 다음 주 전략을 제안합니다.', '🦅', 11),
+  ('dolphin',  '돌핀 (Dolphin)',      '유튜브팀장 · CMO·CDO',  '무리와 신호를 주고받는 사냥꾼. 쇼츠 채널의 팀장으로 어떻게 더 보게 만들지(CMO)와 무엇을 근거로 판단할지(CDO)를 맡습니다. 성과 계측이 끊겨 있으면 그 복구를 가장 먼저 요구합니다.', '🐬', 12),
+  ('rhino',    '라이노 (Rhino)',      '개발팀장 · CTO·CISO',   '단단한 가죽의 파수꾼. 파이프라인 신뢰성(CTO)과 보안(CISO)을 함께 봅니다. "돌아가긴 하나요"가 아니라 "조용히 실패하고 있지는 않나요"를 묻습니다.', '🦏', 13),
+  ('panther',  '팬서 (Panther)',      '인스타팀장 · CBO·CLO',  '소리 없이 살피는 감각. 카드뉴스 채널의 브랜드 목소리(CBO)와 인용·저작권 안전(CLO)을 책임집니다. 예쁘게 나왔는지보다 그 문장이 정말 그 책에 있는지를 먼저 묻습니다.', '🐆', 14),
   ('cheetah',  '치타 (Cheetah)',      '트렌드 주제 수집',      '가장 빠른 발. AI·자동화 분야의 최신 트렌드를 실시간으로 스캔해 오늘 쓸 만한 주제 후보를 물어옵니다.', '🐆', 20),
   ('owl',      '아울 (Owl)',          '심층 주제 수집',        '밤새 공부하는 학자. 유행보다 깊이 — 근거 자료와 레퍼런스가 탄탄한 주제를 발굴합니다.', '🦉', 30),
   ('magpie',   '맥파이 (Magpie)',     '커뮤니티 소재 수집',    '반짝이는 것을 모으는 수집가. Reddit과 Hacker News 에서 개발자들이 진짜로 이야기하는 소재를 주워옵니다.', '🐦', 40),
@@ -81,3 +86,35 @@ insert into public.agents (id, name, role, description, emoji, sort_order) value
   ('robin',    '로빈 (Robin)',           '카드뉴스 작가',         '겨울에도 노래하는 새. 검증된 구절 한 편을 카드 7장과 캡션으로 옮깁니다 — 인용은 한 글자도 바꾸지 않고, 해설은 오늘의 말로.', '🐦', 380),
   ('firefly',  '파이어플라이 (Firefly)', '카드뉴스 오케스트레이터', '어둠 속에서 길만 밝히는 불빛. 소재 발굴→선정→인용 검증→대본→렌더→발행까지 하루치 흐름을 조율합니다 (직접 창작은 안 함).', '✨', 390)
 on conflict (id) do nothing;
+
+-- 관제 3인 — 사이트·인프라·파이프라인을 밖에서 지켜보는 팀 (이미 있으면 무시)
+-- ⚠ 이 셋은 시드에 빠져 있었는데 **실 DB에는 이미 있었다**(2026-08-21 화면에서 구스가 발견됨).
+--    시드가 실 DB보다 오래됐던 것이라 파일을 현실에 맞춘다. on conflict do nothing 이라
+--    라이브 값을 덮어쓰지 않는다.
+insert into public.agents (id, name, role, description, emoji, sort_order) values
+  ('goose',      '구스 (Goose)',           '사이트 관제',   '블로그 사이트(thundo.kr)의 건강을 매일 바깥에서 점검하는 사이트 관제 담당입니다. 홈·블로그·사이트맵의 응답과 속도를 실측해 이상 징후를 브리핑하며, 사이트를 직접 고치지는 않습니다.', '🪿', 400),
+  ('woodpecker', '우드페커 (Woodpecker)',  '인프라 관제',   '두드려서 속을 아는 새. 관찰 대상 서버의 상태·서비스·로그를 읽기전용으로 훑어 이상 징후만 골라 브리핑합니다 (재시작·배포·수정은 하지 않습니다).', '🐦', 410),
+  ('sheepdog',   '시프도그 (Sheepdog)',    '파이프라인 관제', '무리를 세지 않고 지키는 개. 매일 도는 잡·상시 프로세스·크리덴셜을 주기적으로 점검해 안전하게 되돌릴 수 있는 문제는 스스로 복구하고, 사람 손이 필요한 건만 알립니다 (파괴적 동작 금지).', '🐕', 420)
+on conflict (id) do nothing;
+
+-- ── 마스코트 초상 배선 (2026-08-21) ──────────────────────────────────────────
+-- 아바타의 단일 출처는 **DB의 image_url** 이다. 화면(소개 카드·홈 미리보기·흐름도·관리자·
+-- 대화)은 전부 이 값을 읽으므로, 관리자에서 바꾸면 모든 곳이 함께 바뀐다.
+-- 파일은 web/public/agent-portraits/<id>.jpg (208x208). 출처·매핑 근거는 같은 폴더 _source.json.
+--
+-- ⚠ `on conflict do nothing` 이 아니라 **update** 다. 위 insert 들은 신규 행만 만들고,
+--    이미 있는 행에는 image_url 이 비어 있기 때문이다(그래서 화면에 첫 글자 아바타가 떴다).
+-- ⚠ 이미 다른 이미지를 지정해 둔 행은 건드리지 않는다(`where image_url is null or = ''`).
+--    관리자가 개별 교체한 값을 시드 재실행이 덮으면 안 된다.
+update public.agents
+   set image_url = '/agent-portraits/' || id || '.jpg',
+       updated_at = now()
+ where (image_url is null or image_url = '')
+   and id in (
+     'lion','falcon','dolphin','rhino','panther','cheetah','owl','magpie','beaver','fox',
+     'wolf','eagle','bee','swan','raven','peacock','penguin','elephant','crane','meerkat',
+     'hummingbird','parrot','spider','raccoon','lynx','badger','nightingale','fennec','mole',
+     'heron','deer','hedgehog','robin','firefly','goose','woodpecker','sheepdog',
+     'dev-orchestrator','dev-planner','dev-architect','dev-designer','dev-coder',
+     'dev-tester','dev-security','dev-verifier','dev-devops'
+   );

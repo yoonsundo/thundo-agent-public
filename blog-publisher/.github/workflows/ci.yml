@@ -1,0 +1,76 @@
+name: ci
+
+# Phase 0 안전망. 이 저장소는 2026-08-21 까지 **어떤 커밋도 테스트를 트리거하지
+# 않았다**(워크플로가 daily-publish.yml 하나뿐이고 그마저 workflow_dispatch 전용).
+# 리팩토링은 "동작이 안 바뀌었다"를 증명할 수 있어야 성립하므로, 그 증명 장치를
+# 먼저 세운다.
+#
+# ⚠ 크리덴셜을 주지 않는다. 이 저장소의 계약은 "크리덴셜 없음 = warn + exit 0"
+#    이므로, 오히려 크리덴셜 없이 도는 것이 계약 검증이 된다.
+#    실제 발행(claude·YouTube·Meta·Supabase 쓰기)은 CI 에서 절대 일어나면 안 된다.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (정적 분석)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # --max-warnings 는 두지 않는다. error 만 red 로 만들고 warn 은 보고용이다
+      # (규칙셋 정책은 eslint.config.js 주석 참조).
+      - name: ESLint
+        run: npm run lint
+
+      # 타입 검사(F-15). 지금 범위는 kernel·lib·gates 뿐이다 — 나머지 615건은
+      # tsconfig.json 의 주석에 명시적으로 보류돼 있고, 한 디렉터리씩 넓혀 간다.
+      - name: 타입 검사
+        run: npm run typecheck
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUN_MODE: mock
+      NO_COLOR: '1'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      - name: 실행 대상 목록 (제외·SLOW 가 무엇인지 로그에 남긴다)
+        run: node scripts/test/run-all.mjs --list
+
+      # --include-slow 는 run-lion mock 종단 실행을 포함한다(실측 ~185s).
+      # --json-out 덕에 스위트를 한 번만 돌고도 결과 기록이 남는다.
+      - name: 테스트
+        run: node scripts/test/run-all.mjs --include-slow --json-out=test-results.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.json
+          if-no-files-found: ignore

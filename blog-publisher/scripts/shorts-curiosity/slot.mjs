@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * shorts-curiosity/slot.mjs — 시차 발행 슬롯 러너 (cron 10/12/18 KST 각 호출).
+ * shorts-curiosity/slot.mjs — 시차 발행 슬롯 러너 (cron 10/18 KST 각 호출 + 21시 결손보충).
  *
  * "한번에 발행 X — 시간 텀 두고 최적시간 자동 발행"(2026-07-14 사용자). 슬롯마다 best-pick
  * 1편을 produce+upload 하되, **일일 상한(daily_cap, 기본 3)** 을 넘지 않게 가드한다
- * (슬롯 중복 발화·재실행에도 하루 3편 초과 발행 안 함 — 멱등).
+ * (슬롯 중복 발화·재실행에도 pick.daily_target 초과 발행 안 함 — 멱등).
  *
  * ── US-008 무결방 가드 (2026-07-30 신설) ────────────────────────────────────
  * 2026-07-25·26 에 claude -p 지속성 장애로 3개 슬롯이 전멸해 **업로드 0편 × 2일 연속**이
@@ -18,8 +18,8 @@
  * 환경변수:
  *   CURIOSITY_SLOT_N   이 슬롯에서 만들 편수(기본 1, 결손 보충 시 자동 증가)
  *   CURIOSITY_FORCE=1  일일 상한 무시(오늘 킥스타트 등 일회성)
- *   CURIOSITY_DAILY_CAP 하루 상한(기본 config.upload.daily_cap || 3)
- *   CURIOSITY_SLOT_HOURS 슬롯 시각(KST, 기본 "10,12,18") — 결손 기대치 계산용
+ *   CURIOSITY_DAILY_CAP 하루 상한(기본 config.upload.daily_cap || pick.daily_target)
+ *   CURIOSITY_SLOT_HOURS 슬롯 시각(KST, 기본 "10,18") — 결손 기대치 계산용
  *   CURIOSITY_SLOT_KEY  경보 중복 방지 마커 키(기본 현재 KST 시각 HH)
  *
  * 계약: stdout JSON. exit 0=정상(스킵 포함)/1=발행 실패/2=제작 예외(기존 신호 보존).
@@ -60,20 +60,20 @@ export function uploadedToday(index, now = new Date()) {
   }).length;
 }
 
-/** 슬롯 시각 목록(KST). cron(10/12/18)과 일치시켜 두면 결손 기대치가 정확해진다. */
+/** 슬롯 시각 목록(KST). cron(10/18)과 일치시켜 두면 결손 기대치가 정확해진다. */
 export function slotSchedule() {
-  const hours = String(process.env.CURIOSITY_SLOT_HOURS || '10,12,18')
+  const hours = String(process.env.CURIOSITY_SLOT_HOURS || '10,18')
     .split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite).sort((a, b) => a - b);
-  return hours.length ? hours : [10, 12, 18];
+  return hours.length ? hours : [10, 18];
 }
 
 /**
  * 당일 결손 보충 계획 — "지금까지 몇 편 나갔어야 하는가(expected)" 대비 실제(already)의
  * 차이를 이번 슬롯이 흡수한다. 마지막 슬롯이면 expected=cap 이므로 하루치를 통째로 시도한다
- * (예: 오늘 0/3 이고 18시 슬롯 → 3편). 상한 초과는 remaining 으로 잘라 절대 금지.
+ * (예: 오늘 0/2 이고 18시 슬롯 → 2편). 상한 초과는 remaining 으로 잘라 절대 금지.
  * @returns {{n:number, expected:number, deficit:number, slotIndex:number, isLast:boolean, remaining:number}}
  */
-export function slotPlan({ now = new Date(), cap = 3, already = 0, want = 1 } = {}) {
+export function slotPlan({ now = new Date(), cap = 2, already = 0, want = 1 } = {}) {
   const hours = slotSchedule();
   const h = kstHour(now);
   const passed = hours.filter(x => x <= h).length;           // 현재 슬롯 포함 경과 슬롯 수
@@ -145,7 +145,7 @@ export function describeDiag(diag) {
  * (notify 어댑터가 지원하는 필드는 reason/details 뿐이므로 details 에 사실을 나열한다)
  * ⚠ 원시 JSON 금지 — 모든 외부 문자열은 sanitizeForAlert 를 통과시킨다.
  */
-export function buildNoGapPayload({ now = new Date(), slotKey, already = 0, cap = 3, planned = 0, produceError = null, inventory = 0, fallbackTried = 0, pickReason = null, diag = null } = {}) {
+export function buildNoGapPayload({ now = new Date(), slotKey, already = 0, cap = 2, planned = 0, produceError = null, inventory = 0, fallbackTried = 0, pickReason = null, diag = null } = {}) {
   const key = slotKey || String(kstHour(now)).padStart(2, '0');
   const date = kstDate(now.toISOString ? now.toISOString() : now);
   const parts = [
@@ -170,7 +170,7 @@ export function buildNoGapPayload({ now = new Date(), slotKey, already = 0, cap 
  * 결방 경보 발송 — 마커로 같은 날 같은 슬롯 중복 발송을 막고, **반환값 sent 로 도달을 확인**한다.
  * ⚠ 이 박스는 필수 크리덴셜 누락으로 config 가 항상 mock 으로 강등된다 → 운영 경보는
  *    NOTIFY_FORCE_LIVE=1 이 없으면 .mock-out/notify.log 에만 적히고 사람에게 도달하지 않는다
- *    (근거: scripts/notify/live-override.mjs, crosspub/analytics-collect 관례).
+ *    (근거: scripts/notify/live-override.mjs 의 운영 경보 예외 관례).
  * ⚠ 경보 실패가 슬롯을 죽이면 안 된다 — 모든 예외를 흡수하고 결과만 보고한다.
  */
 export async function alertNoGap({ notifier = notify, now = new Date(), slotKey, ...info } = {}) {
@@ -224,9 +224,9 @@ export async function runSlot({ cfg, deps = {} } = {}) {
     ...deps,
   };
   cfg = cfg || loadConfig();
-  // 하루 상한 = 사용자 룰 3편. config 는 두 곳에 표현될 수 있어 둘 다 읽는다
-  // (upload.daily_cap 이 명시되면 우선, 없으면 pick.daily_target, 둘 다 없으면 3).
-  const cap = Number(process.env.CURIOSITY_DAILY_CAP) || cfg.upload?.daily_cap || cfg.pick?.daily_target || 3;
+  // 하루 상한 = 사용자 룰(2026-08-21 3편→2편). config 는 두 곳에 표현될 수 있어 둘 다 읽는다
+  // (upload.daily_cap 이 명시되면 우선, 없으면 pick.daily_target, 둘 다 없으면 2).
+  const cap = Number(process.env.CURIOSITY_DAILY_CAP) || cfg.upload?.daily_cap || cfg.pick?.daily_target || 2;
   const force = process.env.CURIOSITY_FORCE === '1';
   const want = Number(process.env.CURIOSITY_SLOT_N) || 1;
 
@@ -236,7 +236,7 @@ export async function runSlot({ cfg, deps = {} } = {}) {
   // 그런 "0편"은 장애가 아니라 설정이고, 매 슬롯 오탐 경보는 채널을 무시당하게 만든다.
   const readiness = d.uploadReadiness(cfg);
 
-  // ── 상한 가드: 이미 3편이면 아무것도 하지 않는다(사용자 룰, 멱등) ──
+  // ── 상한 가드: 이미 상한이면 아무것도 하지 않는다(사용자 룰, 멱등) ──
   if (!force && already >= cap) {
     log.info(`일일 상한 도달(${already}/${cap}) → 스킵`);
     return { ok: true, skipped: 'daily_cap', already, cap };

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { paths } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('watchdog/lock');
 
 // ─── 경로 ─────────────────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ export function isLocked(date) {
 }
 
 // CLI
-if (process.argv[1] && process.argv[1].endsWith('lock.mjs')) {
+if (isMainModule(import.meta.url)) {
   const cmd = process.argv[2] || 'status';
   if (cmd === 'status') {
     console.log('locked:', isLocked());

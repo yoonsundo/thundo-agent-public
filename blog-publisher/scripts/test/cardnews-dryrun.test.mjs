@@ -66,7 +66,7 @@ process.env.CARDNEWS_CONFIG_OVERRIDE = CFG_PATH;
 const NOW = new Date('2026-08-01T02:00:00.000Z');        // KST 08-01 11:00 (슬롯 11)
 writeFileSync(TOKEN_FILE, JSON.stringify({
   ig_user_id: '17841400000000000',
-  access_token: 'stub-long-lived-token',
+  access_token: 'stub-long-lived-token',   // secret-scan: allow 테스트 스텁 문자열(실 토큰 아님)
   issued_at: new Date(NOW.getTime() - 86400000).toISOString(),      // 1일 → refreshPlan noop
   expires_at: new Date(NOW.getTime() + 59 * 86400000).toISOString(),
 }), 'utf8');

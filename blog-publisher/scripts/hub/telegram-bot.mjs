@@ -24,6 +24,7 @@ import { sendTelegram }                          from '../notify/telegram.mjs';
 import { isMock, env, paths }                   from '../lib/config.mjs';
 import { makeLogger }                            from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('hub/telegram-bot');
 
 // ─── 명령 키워드 매핑 ─────────────────────────────────────────────────────────
@@ -343,7 +344,7 @@ export async function pollLiveUpdates(offset = 0) {
 //   node scripts/hub/telegram-bot.mjs poll          — 인박스 폴링 (mock/live 자동 감지)
 //   node scripts/hub/telegram-bot.mjs say "멈춰"   — 단일 메시지 처리 후 reply 출력
 
-if (process.argv[1] && process.argv[1].endsWith('telegram-bot.mjs')) {
+if (isMainModule(import.meta.url)) {
   const cmd = process.argv[2];
   const arg = process.argv[3];
 

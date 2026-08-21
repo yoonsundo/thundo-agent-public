@@ -12,9 +12,7 @@
  *
  * 테스트 격리: CARDNEWS_CONFIG_OVERRIDE(설정) · STATE_DIR_OVERRIDE(상태 루트).
  */
-import {
-  readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, realpathSync,
-} from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync,  } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -23,6 +21,22 @@ import { execFileSync } from 'node:child_process';
 import { paths } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { makeClaudeRunner, probeClaudeVersion } from '../lib/claude-runner.mjs';
+import { makeLifecycle } from '../kernel/lifecycle.mjs';
+import {
+  FAILURE_KINDS, classifyFailure, failureAction as kernelFailureAction,
+} from '../kernel/llm-failure.mjs';
+
+// 실패 분류의 정본은 kernel/llm-failure.mjs 하나다(이 파일에 있던 포크를 그리로 올렸다).
+export { FAILURE_KINDS, classifyFailure };
+
+/** 갈래별 사람 조치 문구 — 카드뉴스 채널의 폴백·로그 경로를 주입한다. */
+export function failureAction(kind) {
+  return kernelFailureAction(kind, {
+    fallbackNote:  '그 사이 발행은 예비 대본 buffer 가 담당한다.',
+    unknownAction: '원인 불명 — 진단 로그 확인 필요: runs/cardnews-<날짜>.log 와 state/cardnews/last-claude-failure.json',
+  });
+}
 const log = makeLogger('cardnews/lib');
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -174,25 +188,18 @@ export const TRANSITIONS = Object.freeze({
   published: [],               // 종단 — 어떤 간선도 없다
 });
 
+
+// 상태 집합·간선은 이 채널의 도메인 지식이라 여기 남는다. **판정 로직만** 커널로 옮겼다
+// (kernel/lifecycle.mjs) — 세 버티컬이 같은 개념을 서로 다른 방식으로 검증하던 것을 없앤다.
+const LIFECYCLE = makeLifecycle({ states: STATES, transitions: TRANSITIONS, terminal: ['published'] });
+
 export function allowedTransitions(from) {
-  return TRANSITIONS[from === null || from === undefined ? 'null' : from] || null;
+  return LIFECYCLE.allowedTransitions(from);
 }
 
 /** 전이 가능 여부(불허면 사유 포함). `transition` 이 이걸로 판정한다. */
 export function canTransition(from, to) {
-  const allowed = allowedTransitions(from);
-  if (!allowed) return { ok: false, reason: `미지의 from 상태 '${from}'` };
-  if (!STATES.includes(to)) return { ok: false, reason: `미지의 to 상태 '${to}'` };
-  if (!allowed.includes(to)) {
-    return {
-      ok: false,
-      reason: from === 'published'
-        ? "'published' 는 종단 상태 — 어떤 전이도 없다"
-        : `'${from}' → '${to}' 불허(허용: ${allowed.join(', ') || '없음'})`
-        + (from === to ? ' — 같은 상태에서 필드만 남기려면 flush() 를 쓰라' : ''),
-    };
-  }
-  return { ok: true };
+  return LIFECYCLE.canTransition(from, to);
 }
 
 // ── 인덱스 I/O ───────────────────────────────────────────────────────────────
@@ -335,64 +342,6 @@ export function transition(postId, to, patch = {}, { now = new Date() } = {}) {
 
 // ── 실패 분류 ────────────────────────────────────────────────────────────────
 
-/**
- * claude 실패 신호. `shorts-curiosity/lib.mjs:117-124` 포크 — 원본은 손대지 않는다(Tier A 0줄).
- */
-const FAILURE_SIGNALS = Object.freeze({
-  usageLimit: /usage limit|limit reached|limit exceeded|사용량 한도|한도에 도달|rate.?limit|quota|\b429\b|too many requests|credit balance|insufficient credit|out of credits|upgrade to continue/i,
-  auth: /unauthorized|\b401\b|invalid api key|authentication[_ ]error|authentication failed|not logged in|login required|please run.{0,20}login|\/login|oauth.{0,20}expired|session expired|재로그인|로그인이 필요/i,
-  cliMissing: /ENOENT|command not found|not found: claude|ETXTBSY/i,
-  timeout: /\btimed out\b|\btimeout\b|ETIMEDOUT/i,
-  network: /ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|fetch failed|network error|Connection closed|mid-response|overloaded|\b(500|502|503|504|529)\b/i,
-});
-
-export const FAILURE_KINDS = Object.freeze(['usage-limit', 'auth', 'cli-missing', 'timeout', 'network', 'unknown']);
-
-/**
- * claude 실패 분류 — `shorts-curiosity/lib.mjs:123 classifyClaudeFailure` 포크.
- * stdout·stderr·exit code·signal 을 **함께** 본다. 확실하지 않으면 unknown 으로 두고 원문을
- * 남긴다(억지 분류가 오진을 만든다).
- *
- * 이 판정을 **저장 필드로 남기는 것**이 스펙 1-B 요건이다 — 07-25 로그는
- * `Command failed: claude -p` 한 줄뿐이라 한도/CLI손상/네트워크를 사후 판별할 수 없었다.
- *
- * @param {object} p {stdout, stderr, message, status, signal, code, killed, versionOk}
- * @returns {{kind:string, confidence:'high'|'medium'|'low', evidence:string|null,
- *            exit_code:number|null, signal:string|null, stderr_empty:boolean}}
- */
-export function classifyFailure({ stdout = '', stderr = '', message = '', status, signal, code, killed, versionOk } = {}) {
-  const blob = [message, stderr, stdout].map(x => (x == null ? '' : String(x))).filter(Boolean).join('\n');
-  const hit = (re) => { const m = blob.match(re); return m ? String(m[0]).slice(0, 120) : null; };
-  const meta = {
-    exit_code: typeof status === 'number' ? status : null,
-    signal: signal ?? null,
-    stderr_empty: !String(stderr || '').trim(),
-  };
-  const verdict = (kind, confidence, evidence) => ({ kind, confidence, evidence, ...meta });
-
-  // ① exec 자체가 못 뜬 ENOENT = CLI 부재 확정(다른 해석 여지 없음).
-  if (code === 'ENOENT') return verdict('cli-missing', 'high', 'ENOENT — claude 바이너리를 찾지 못함');
-  // ② 한도(확실 신호만). 짧은 백오프 재시도가 무의미한 유일한 갈래.
-  const usage = hit(FAILURE_SIGNALS.usageLimit);
-  if (usage) return verdict('usage-limit', 'high', usage);
-  // ③ 인증
-  const auth = hit(FAILURE_SIGNALS.auth);
-  if (auth) return verdict('auth', 'high', auth);
-  // ④ 버전 조회조차 실패 = CLI 자체 불가(API 를 타지 않는 호출이라 한도와 무관).
-  if (versionOk === false) return verdict('cli-missing', 'medium', 'claude --version 실패');
-  // ⑤ 타임아웃(우리가 SIGTERM 으로 죽인 경우 포함) → 네트워크보다 먼저 본다.
-  if (killed === true || signal === 'SIGTERM' || hit(FAILURE_SIGNALS.timeout)) {
-    const hard = killed === true || signal === 'SIGTERM';
-    return verdict('timeout', hard ? 'high' : 'medium',
-      hard ? `타임아웃으로 종료(signal=${signal || 'SIGTERM'})` : hit(FAILURE_SIGNALS.timeout));
-  }
-  const net = hit(FAILURE_SIGNALS.network);
-  if (net) return verdict('network', 'medium', net);
-  const cli = hit(FAILURE_SIGNALS.cliMissing);
-  if (cli) return verdict('cli-missing', 'medium', cli);
-  // ⑥ 모르면 모른다고 한다 — 원문은 diag 에 그대로 실린다.
-  return verdict('unknown', 'low', null);
-}
 
 export const HELD_CLASSES = Object.freeze(['transient', 'permanent', 'external']);
 
@@ -531,23 +480,6 @@ export const FAILURE_LABELS = Object.freeze({
   unknown: '원인 불명',
 });
 
-/** 갈래별 사람 조치 문구(경보에 그대로 실린다). */
-export function failureAction(kind) {
-  switch (kind) {
-    case 'usage-limit':
-      return '구독 사용량 한도로 판단 — 재시도해도 무의미하니 한도 리셋(보통 수 시간)까지 대기. 그 사이 발행은 예비 대본 buffer 가 담당한다.';
-    case 'auth':
-      return '터미널에서 claude 를 한 번 실행해 로그인 상태를 확인(재로그인 필요). 인증이 풀리면 자동 복구되지 않는다.';
-    case 'cli-missing':
-      return 'claude CLI 가 없거나 손상 — PATH 확인 후 재설치. auto-update 중 순간 소실이면 다음 슬롯에 자동 복구된다.';
-    case 'timeout':
-      return '응답 시간 초과 — 다음 슬롯이 자동 재시도한다. 반복되면 회선·부하를 확인.';
-    case 'network':
-      return '네트워크·API 연결 실패 — 회선/DNS 확인. 일시적이면 다음 슬롯에 자동 복구된다.';
-    default:
-      return '원인 불명 — 진단 로그 확인 필요: runs/cardnews-<날짜>.log 와 state/cardnews/last-claude-failure.json';
-  }
-}
 
 export function claudeFailurePath() {
   return join(stateRoot(), 'last-claude-failure.json');
@@ -564,15 +496,6 @@ export function recordClaudeFailure(diag) {
   return diag;
 }
 
-/** claude CLI 자체가 뜨는지 확인(API 미경유) — 실패하면 "CLI 자체 불가" 판정 근거. */
-export function probeClaudeVersion({ exec = execFileSync } = {}) {
-  try {
-    const out = exec('claude', ['--version'], { encoding: 'utf8', timeout: 20_000 });
-    return { ok: true, version: String(out).trim().slice(0, 80) };
-  } catch (e) {
-    return { ok: false, error: `${e.code || ''} ${e.message || ''}`.trim().slice(0, 200) };
-  }
-}
 
 // ── 런당 호출 예산 ───────────────────────────────────────────────────────────
 //
@@ -602,122 +525,6 @@ export function chargeClaudeCall({ exempt = false, cfg = null, max = null } = {}
   return claudeCalls;
 }
 
-/** 동기 sleep(ms) — execFileSync 기반 callClaude 백오프용(외부 프로세스·PATH 의존 없음). */
-function sleepSync(ms) {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0)); } catch { /* SAB 미지원 환경 무시 */ }
-}
-
-/** 로그·진단용 발췌(원문 보존이 목적). */
-function excerpt(v, n = 600) {
-  const s = v == null ? '' : String(v);
-  return s.length > n ? s.slice(0, n) + `…(총 ${s.length}자)` : s;
-}
-
-/**
- * 구독 claude CLI 호출 → result 텍스트(코드펜스 제거).
- *
- * 일시적 장애(auto-update 중 바이너리 순간 소실=ENOENT, 반쯤 설치된 상태=비정상종료, 타임아웃·
- * 과부하)는 동기 백오프(4s·8s·12s)로 재시도한다. **확실한 한도 신호일 때만** 즉시 포기한다 —
- * 한도 소진에 백오프를 태우면 슬롯만 지연되고 결과는 같다.
- *
- * @param {string} prompt
- * @param {object} [opt]
- * @param {number} [opt.retries] 기본 3 (env `CARDNEWS_CLAUDE_RETRIES`)
- * @param {boolean} [opt.exempt] 예산 throw 면제(buffer top-up 전용). 계상은 그대로 한다.
- * @param {object} [opt.cfg] `budget.max_claude_calls_per_run` 조회용
- * @param {function} [opt.exec] 테스트 주입점 — 기본 `execFileSync`
- */
-export function callClaude(prompt, {
-  retries, retryBaseMs = 4000, exec = execFileSync, versionProbe = probeClaudeVersion,
-  onFailure = recordClaudeFailure, exempt = false, cfg = null, budgetMax = null,
-} = {}) {
-  // 예산 먼저 — 상한을 넘긴 호출은 CLI 를 띄우지도 않는다.
-  chargeClaudeCall({ exempt, cfg, max: budgetMax });
-
-  const maxRetries = Number.isFinite(retries) ? retries
-    : (Number.isFinite(parseInt(process.env.CARDNEWS_CLAUDE_RETRIES, 10)) ? parseInt(process.env.CARDNEWS_CLAUDE_RETRIES, 10) : 3);
-  const startedAt = Date.now();
-  let lastErr;
-  let versionInfo = null;   // 실패 시 1회만 조회
-
-  /** 실패 확정 — 진단 조립 → 구조화 로그 → 파일 기록 → err.diag 첨부해 반환. */
-  const fail = (raw, { attempt, abort = null }) => {
-    if (!versionInfo) versionInfo = versionProbe({ exec });
-    // 🔴 분류기는 이 파일의 classifyFailure 하나뿐이다(두 번째 분류기를 만들지 않는다).
-    const cls = classifyFailure({ ...raw, versionOk: versionInfo.ok });
-    const diag = {
-      at: new Date().toISOString(),
-      source: 'cardnews/callClaude',
-      kind: cls.kind,
-      confidence: cls.confidence,
-      evidence: cls.evidence,
-      action: failureAction(cls.kind),
-      label: FAILURE_LABELS[cls.kind] || FAILURE_LABELS.unknown,
-      exit_code: cls.exit_code,
-      signal: cls.signal,
-      error_code: raw.code ?? null,
-      attempts: attempt + 1,
-      max_attempts: maxRetries + 1,
-      aborted_early: abort,
-      elapsed_ms: Date.now() - startedAt,
-      cli_version: versionInfo.ok ? versionInfo.version : null,
-      cli_probe_error: versionInfo.ok ? null : versionInfo.error,
-      message: excerpt(raw.message, 300),
-      stderr_excerpt: excerpt(raw.stderr),
-      stdout_excerpt: excerpt(raw.stdout),
-      stderr_empty: cls.stderr_empty,
-      calls_used: claudeCalls,
-    };
-    log.error(`claude 실패 진단 [${diag.kind}/${diag.confidence}]`, diag);
-    try { onFailure(diag); } catch { /* 기록 실패 비차단 */ }
-    const err = new Error(`claude 실행 실패(${diag.kind}): ${raw.message || 'no message'}${diag.stderr_empty ? ' :: stderr 비어있음' : ' :: ' + excerpt(raw.stderr, 300)}`);
-    err.diag = diag;
-    return err;
-  };
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    let raw;
-    try {
-      raw = exec('claude', ['-p', '--output-format', 'json', '--dangerously-skip-permissions'], {
-        input: prompt, encoding: 'utf8', timeout: 300_000, maxBuffer: 40 * 1024 * 1024,
-      });
-    } catch (e) {
-      lastErr = e;
-      const obs = { message: e.message, stderr: e.stderr, stdout: e.stdout, status: e.status, signal: e.signal, code: e.code, killed: e.killed };
-      const early = classifyFailure({ ...obs, versionOk: true });
-      if (early.kind === 'usage-limit' && early.confidence === 'high') {
-        throw fail(obs, { attempt, abort: 'usage-limit(확실) — 재시도 생략' });
-      }
-      const blob = `${e.code || ''} ${e.message || ''} ${e.stderr || ''}`;
-      const transient = e.code === 'ENOENT' || /ENOENT|ETXTBSY|EAGAIN|Command failed|timeout|Connection closed|mid-response|overloaded|too many requests|\b(429|500|502|503|504|529)\b/i.test(blob);
-      if (attempt < maxRetries && transient) {
-        sleepSync(retryBaseMs * (attempt + 1));
-        continue;
-      }
-      throw fail(obs, { attempt });
-    }
-    let env;
-    try { env = JSON.parse(raw); } catch {
-      throw fail({ message: 'claude --output-format json 파싱 실패', stdout: raw, stderr: '', status: 0 }, { attempt });
-    }
-    if (env.is_error || env.subtype !== 'success' || typeof env.result !== 'string') {
-      // 응답 레벨 오류 — stdout(JSON) 에 진짜 사유가 들어있는 경우가 많다(stderr 는 비어있음).
-      const obs = {
-        message: `claude 응답 오류: subtype=${env.subtype}${env.is_error ? ', is_error=true' : ''}`,
-        stdout: typeof raw === 'string' ? raw : JSON.stringify(env), stderr: '', status: 0,
-      };
-      const early = classifyFailure({ ...obs, versionOk: true });
-      if (early.kind === 'usage-limit' && early.confidence === 'high') {
-        throw fail(obs, { attempt, abort: 'usage-limit(확실) — 재시도 생략' });
-      }
-      lastErr = new Error(obs.message);
-      if (attempt < maxRetries) { sleepSync(retryBaseMs * (attempt + 1)); continue; }
-      throw fail(obs, { attempt });
-    }
-    return env.result.replace(/^```\w*\r?\n?/, '').replace(/\r?\n?```\s*$/, '').trim();
-  }
-  throw lastErr;
-}
 
 /** 텍스트에서 첫 JSON(객체/배열) 추출·파싱. */
 export function extractJson(text) {
@@ -751,8 +558,29 @@ export function withBrief(name, prompt) {
 // ── 기타 ─────────────────────────────────────────────────────────────────────
 
 /** 심링크 견고 main-module 판별. */
-export function isMainModule(metaUrl) {
-  if (!process.argv[1]) return false;
-  try { return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]); }
-  catch { return fileURLToPath(metaUrl) === resolve(process.argv[1]); }
-}
+// 정본은 lib/main-module.mjs 한 곳이다. 기존 소비자를 위해 여기서 재export 한다.
+export { isMainModule } from '../lib/main-module.mjs';
+
+// ─── claude 호출 (파일 끝) ──────────────────────────────────────────────────
+// ⚠ 팩토리 호출이 **모듈 평가 시점에 실행**되므로, 정책으로 넘기는 값(log·
+//   failureAction·FAILURE_LABELS·chargeClaudeCall …)이 모두 초기화된 뒤여야 한다.
+//   위쪽에 두면 const 의 TDZ 에 걸려 모듈이 통째로 죽는다(2026-08-21 실측).
+// claude 호출의 정본은 lib/claude-runner.mjs 하나다. 카드뉴스만의 정책은 둘 —
+// 호출 전 예산 차감(상한을 넘기면 CLI 를 띄우지 않는다)과, 진단에 남기는 라벨·사용량.
+export { probeClaudeVersion };
+export const callClaude = makeClaudeRunner({
+  source:        'cardnews/callClaude',
+  retriesEnvVar: 'CARDNEWS_CLAUDE_RETRIES',
+  actionFor:     failureAction,
+  recordFailure: (diag) => recordClaudeFailure(diag),
+  log,
+  beforeCall: ({ exempt = false, cfg = null, budgetMax = null } = {}) =>
+    chargeClaudeCall({ exempt, cfg, max: budgetMax }),
+  extraDiag: (cls) => ({
+    label:        FAILURE_LABELS[cls.kind] || FAILURE_LABELS.unknown,
+    exit_code:    cls.exit_code,
+    signal:       cls.signal,
+    stderr_empty: cls.stderr_empty,
+    calls_used:   claudeCalls,
+  }),
+});

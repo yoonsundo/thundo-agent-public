@@ -10,7 +10,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { appendAudit, ACTIONS } from '../audit/append.mjs';
 
-const EVOLVABLE_AGENTS = ['beaver', 'fox', 'wolf', 'cheetah', 'owl', 'magpie', 'eagle', 'bee', 'swan', 'raven'];
+// 이사회(board)도 이 목록을 그대로 쓴다 — 두 곳에 따로 적으면 한쪽만 늘어나 "큐에는 넣었는데
+// 적용기가 거부하는" 죽은 편지가 생긴다(2026-08-21 실측: raccoon 을 큐에 넣었으나 처리 불가였다).
+export const EVOLVABLE_AGENTS = ['beaver', 'fox', 'wolf', 'cheetah', 'owl', 'magpie', 'eagle', 'bee', 'swan', 'raven'];
 
 // 단조성 트립와이어: 변종 텍스트에 이런 게 보이면 방어선 약화 시도 → 거부
 const FORBIDDEN_PATTERNS = [
@@ -68,4 +70,6 @@ function main() {
   console.log(`[apply-evolve] ✅ ${agent} v${oldVer}→v${newVer} 적용 + 감사기록`);
 }
 
-main();
+// CLI 로 실행할 때만 동작한다. 가드가 없으면 EVOLVABLE_AGENTS 를 import 하는 쪽에서
+// 적용기가 통째로 실행돼 인자 없음으로 종료한다(실측). 목록은 board 도 공유해야 하므로 필요하다.
+if (import.meta.url === `file://${process.argv[1]}`) main();

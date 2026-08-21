@@ -11,15 +11,32 @@
  *   { slug, title, backlink, hook, cards:[{caption, narration}], cta }
  * 계약: stdout JSON 1줄 {ok, slug, cards, script_file}. exit 0 / 2=오류
  */
-import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
 import { makeLogger } from '../lib/log.mjs';
-import { parseDoc } from '../crosspub/lib.mjs';
+import { parseDoc } from '../lib/published-doc.mjs';
 import { loadShortsConfig, workDir, isMainModule } from './lib.mjs';
-import '../lib/force-subscription.mjs';
 
+import { makeClaudeRunner } from '../lib/claude-runner.mjs';
 const log = makeLogger('shorts/script');
+
+/**
+ * claude 호출은 공용 러너 하나가 맡는다(F-05). 이 파일에 있던 간이판은
+ * 재시도도 실패 분류도 없었고, 구독 인증 강제를 `force-subscription` import 한 줄에
+ * 의존했다 — 러너를 쓰면 셋 다 공짜로 따라온다.
+ *
+ * 이 채널의 정책은 진단 출처 이름과 재시도 환경변수뿐이다.
+ */
+const callClaude = makeClaudeRunner({
+  source:        'shorts/script/callClaude',
+  retriesEnvVar: 'SHORTS_CLAUDE_RETRIES',
+  actionFor:     (kind) => kind === 'cli-missing'
+    ? 'claude CLI 부재(구독 LLM 없음) — 대본 생성 불가. PATH 확인 후 재설치.'
+    : 'claude 호출 실패 — 다음 슬롯이 재시도한다. 반복되면 로그인·회선을 확인.',
+  // 이 채널은 별도 진단 파일을 두지 않는다(런 로그에 구조화 로그가 남는다).
+  recordFailure: () => {},
+  log,
+});
 
 /** 카드 스크립트 생성 프롬프트. 출력은 순수 JSON(코드펜스 허용)만. */
 export function buildPrompt(fm, body, backlink, cfg) {
@@ -66,24 +83,6 @@ ${body}
 `;
 }
 
-/** 구독 claude CLI 호출 → result 텍스트(코드펜스 제거). naver/rewrite 와 동일 경로. */
-function callClaude(prompt) {
-  let raw;
-  try {
-    raw = execFileSync('claude', ['-p', '--output-format', 'json', '--dangerously-skip-permissions'], {
-      input: prompt, encoding: 'utf8', timeout: 300_000, maxBuffer: 40 * 1024 * 1024,
-    });
-  } catch (e) {
-    if (e.code === 'ENOENT') throw new Error('claude CLI 부재(구독 LLM 없음) — 대본 생성 불가');
-    throw new Error(`claude 실행 실패: ${e.message}${e.stderr ? ' :: ' + String(e.stderr).slice(0, 300) : ''}`);
-  }
-  let env;
-  try { env = JSON.parse(raw); } catch { throw new Error('claude --output-format json 파싱 실패'); }
-  if (env.is_error || env.subtype !== 'success' || typeof env.result !== 'string') {
-    throw new Error(`claude 응답 오류: subtype=${env.subtype} error=${env.is_error}`);
-  }
-  return env.result.replace(/^```\w*\r?\n?/, '').replace(/\r?\n?```\s*$/, '').trim();
-}
 
 /**
  * 영어 스톡 검색어 정규화 → 최대 3개 문자열 배열(AC-4).

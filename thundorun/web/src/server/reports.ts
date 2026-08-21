@@ -88,6 +88,61 @@ export interface PipelineSummary {
   run_status: 'ok' | 'zero_published' | 'legacy' | 'no_run' | string;
 }
 
+/**
+ * 경영회의(board) — blog-publisher 의 run-board.mjs 가 `summary.board` 로 실어 보낸다.
+ * 새 컬럼 대신 기존 JSON 안에 넣는 이유는 DB 마이그레이션 없이 반영하기 위해서다.
+ * 회의가 형식 검증에 실패하면 `held` 에 사유가 담기고 결정은 비어 있다 — 그때는
+ * "아무것도 바뀌지 않았다"가 화면에 드러나야 한다.
+ */
+export interface BoardLead {
+  team: string;
+  lead: string;
+  titles: string[];
+  headline: string | null;
+  concerns: string[];
+  gaps: string[];
+}
+/**
+ * 반론 한 건 — **요지와 근거가 나뉘어 온다.**
+ * 처음엔 한 항목이 190~320자짜리 문단이었고 30건이 쌓이니 아무도 읽지 않는 목록이 됐다.
+ * 화면이 요지만 먼저 보여주려면 데이터가 먼저 나뉘어 있어야 한다.
+ * 오래된 회의는 문자열로 저장돼 있어 양쪽을 모두 받는다.
+ */
+export type BoardRebuttalItem = string | { point: string; detail?: string; kind?: string };
+export interface BoardRebuttal {
+  hidden_assumptions: BoardRebuttalItem[];
+  risks: BoardRebuttalItem[];
+  logical_flaws: BoardRebuttalItem[];
+  overlooked_scenarios: BoardRebuttalItem[];
+  preventive_measures: BoardRebuttalItem[];
+}
+export interface BoardDecision {
+  id: string;
+  verdict: string;
+  target: string | null;
+  status: string;
+  reason: string;
+  /**
+   * 제안 원문 — 대상 이름만으로는 "무엇을 하자는 건지" 알 수 없어 사람이 판단할 수 없었다.
+   * 오래된 회의에는 없으므로 전부 선택 필드다.
+   */
+  change?: string | null;
+  /** 실행 방법 — 길 수 있다. 제목이 아니라 본문으로 읽는다. */
+  plan?: string | null;
+  rationale?: string | null;
+  expected_effect?: string | null;
+  /** 왜 자동으로 처리하지 않았는지 · 승인하면 어떻게 되는지(평문). */
+  explain?: { why?: string; need?: string } | null;
+}
+export interface BoardMeeting {
+  date: string;
+  held: string | null;
+  leads: BoardLead[];
+  rebuttal: BoardRebuttal | null;
+  decisions: BoardDecision[];
+  needs_human: string[];
+}
+
 export interface ReportSummary {
   published: number;
   cron: boolean;
@@ -98,6 +153,7 @@ export interface ReportSummary {
   idle_agents: string[];
   audit?: number;
   pipeline?: PipelineSummary;
+  board?: BoardMeeting;
 }
 
 export interface AgentReport {

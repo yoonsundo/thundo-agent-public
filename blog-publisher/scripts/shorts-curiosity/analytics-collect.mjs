@@ -35,6 +35,7 @@ import { loadConfig, loadIndex } from './lib.mjs';
 import { uploadReadiness } from '../shorts/upload.mjs';
 import { notify, EVENTS } from '../notify/index.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('curiosity-analytics');
 
 const ANALYTICS_DIR = join(paths.state, 'shorts-curiosity');
@@ -309,9 +310,11 @@ export function buildAlertPayload({ reason, uploads = 0, hasApiKey = apiKey() !=
  * 절대 throw 하지 않는다(경보 실패가 cron 을 죽이면 안 됨).
  * @returns {Promise<{alerted:boolean, skipped?:string, delivery?:object, marker:string}>}
  */
-export async function alertBlocked({ reason, uploads = 0, notifier = notify, now = new Date() } = {}) {
+export async function alertBlocked({ reason, uploads = 0, notifier = notify, now = new Date(), hasApiKey } = {}) {
   const marker = alertMarkerPath(now);
-  const payload = buildAlertPayload({ reason, uploads });
+  // hasApiKey 를 그대로 넘긴다(미지정이면 buildAlertPayload 가 실제 env 를 본다).
+  // 테스트가 분기를 고정할 수 있어야 .env 에 키가 생겼다고 단언이 깨지지 않는다(2026-08-21).
+  const payload = buildAlertPayload(hasApiKey === undefined ? { reason, uploads } : { reason, uploads, hasApiKey });
 
   if (existsSync(marker)) {
     log.warn(`수집 0건(${reason}) — 오늘 경보 이미 발송됨(${marker}) → 중복 발송 생략`);
@@ -442,6 +445,6 @@ async function main() {
   }));
 }
 
-if (process.argv[1] && process.argv[1].endsWith('analytics-collect.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(1); });
 }

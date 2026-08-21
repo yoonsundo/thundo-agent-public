@@ -1,7 +1,7 @@
 {
   "schema": "shorts/v1",
   "enabled": true,
-  "note": "블로그 발행글 1편 → 슬라이드·카드형 9:16 유튜브 쇼츠. 근거: .omc/specs/deep-interview-blog-to-youtube-shorts.md. crosspub 패턴 복제. v1=샘플 1편 검수 후 자동화. 업로드는 채널+OAuth 준비 후 ON.",
+  "note": "블로그 발행글 1편 → 슬라이드·카드형 9:16 유튜브 쇼츠. 근거: .omc/specs/deep-interview-blog-to-youtube-shorts.md. v1=샘플 1편 검수 후 자동화. 업로드는 채널+OAuth 준비 후 ON.",
   "site_base_url": "https://www.thundo.kr/blog",
   "selection": {
     "lookback_days": 3,

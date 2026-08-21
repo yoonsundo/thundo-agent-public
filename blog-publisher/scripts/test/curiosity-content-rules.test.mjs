@@ -9,9 +9,12 @@
  */
 process.env.RUN_MODE = process.env.RUN_MODE || 'mock';
 
+import { readFileSync } from 'node:fs';
+
 const {
   filterCandidates, takeWithWhatifCap, scoreAll, whatifCap, whatifAllowance,
   todayAngleCounts, isNearDuplicate, normalizeSubject, decideRelaxation, availableInventory,
+  contentTokens, topicSimilarity, tokenDocFreq, sharedContentTokens,
 } = await import('../shorts-curiosity/pick.mjs');
 const { loadConfig } = await import('../shorts-curiosity/lib.mjs');
 
@@ -240,7 +243,7 @@ eq('실 상태 재고 편수 조회 가능', typeof availableInventory(), 'numbe
 
 // ── 4. 백로그 보충 임계(고갈 전 보충) ───────────────────────────────────────
 console.log('\n[4] 백로그 보충 임계');
-const { refillThreshold, needsRefill } = await import('../shorts-curiosity/run-curiosity.mjs');
+const { refillThreshold, needsRefill, consumableBacklog } = await import('../shorts-curiosity/run-curiosity.mjs');
 const rcfg = { pick: { daily_target: 3 }, backlog: { target_size: 50, refill_buffer_days: 4 } };
 eq('임계 = daily_target × buffer_days (3×4)', refillThreshold(rcfg), 12);
 ok('잔여 5건(구 하드코딩 임계)에서 보충 트리거', needsRefill(5, rcfg));
@@ -251,7 +254,38 @@ eq('명시 refill_threshold 우선',
   refillThreshold({ ...rcfg, backlog: { ...rcfg.backlog, refill_threshold: 20 } }), 20);
 eq('target_size 로 클램프',
   refillThreshold({ pick: { daily_target: 3 }, backlog: { target_size: 8, refill_buffer_days: 10 } }), 8);
-eq('운영 config 실제 임계', refillThreshold(loadConfig()), 12);
+// 운영 config 의 임계는 daily_target × refill_buffer_days 로 유도된다. 숫자를 고정하면
+// 발행 편수를 바꿀 때마다 이 단언이 깨지므로(2026-08-21 3→2 로 12→8), 값이 아니라
+// **유도 공식이 실제 운영 config 에 적용되는지**를 본다(명시 refill_threshold 가 끼어들면 실패).
+{
+  const opCfg = loadConfig();
+  eq('운영 config 실제 임계 = daily_target × refill_buffer_days',
+    refillThreshold(opCfg),
+    Math.ceil((opCfg.pick?.daily_target ?? 2) * (opCfg.backlog?.refill_buffer_days ?? 4)));
+}
+
+// ── 4-b. 보충 판정은 "실제로 뽑힐 수 있는" 후보만 센다 ──────────────────────
+// 2026-08-21 실측 결함: whatif_ratio=0 이면 pick 이 whatif 를 매 슬롯 채점 전에 버리는데
+// 보충 트리거는 그 후보까지 세어 풀이 마른 걸 못 봤다(pending 17 중 6이 영구 제외분).
+// whatif 잔여는 빠지지 않으므로 소비가능 풀이 바닥날 때까지 보충이 안 걸린다 → 도메인 쏠림.
+const mixed = [
+  { angle: 'reveal', subject: 'r1' }, { angle: 'reveal', subject: 'r2' },
+  { angle: 'whatif', subject: 'w1' }, { angle: 'whatif', subject: 'w2' },
+  { angle: 'whatif', subject: 'w3' },
+];
+const offCfg = { ...rcfg, backlog: { ...rcfg.backlog, angles: { whatif_ratio: 0 } } };
+const onCfg = { ...rcfg, backlog: { ...rcfg.backlog, angles: { whatif_ratio: 0.35 } } };
+eq('whatif 중지 시 소비가능 후보만 집계', consumableBacklog(mixed, offCfg).length, 2);
+eq('whatif 활성 시 전량 집계(회귀 금지)', consumableBacklog(mixed, onCfg).length, 5);
+ok('중지 상태: 전체 5건은 임계(12) 미만이라 어차피 보충이지만, 소비가능 2건이 진짜 수위',
+  needsRefill(consumableBacklog(mixed, offCfg).length, offCfg));
+// 핵심 회귀: 전체 개수로는 충족처럼 보이지만 소비가능은 미달인 경우를 잡아야 한다.
+const padded = [...Array(12)].map((_, i) => ({ angle: 'whatif', subject: `w${i}` }))
+  .concat([{ angle: 'reveal', subject: 'r1' }]);
+ok('전체 13건(임계 충족)이어도 소비가능 1건이면 보충한다',
+  !needsRefill(padded.length, offCfg) && needsRefill(consumableBacklog(padded, offCfg).length, offCfg));
+eq('angle 필드가 없는 구형 항목은 소비가능으로 둔다',
+  consumableBacklog([{ subject: 'legacy' }], offCfg).length, 1);
 ok('구 임계(잔여 5건 미만)보다 여유 있음', refillThreshold(loadConfig()) > 5);
 
 // ── 5. Reddit 주간 top 창 중복 억제 ─────────────────────────────────────────
@@ -291,6 +325,173 @@ eq('앞자리 1건만 기록됨', Object.keys(capped.store).length, 1);
 
 const after9days = orderSeedsBySeen([S1], first.store, { window_days: 8, now: new Date('2026-08-05T00:00:00Z') });
 eq('창(8일) 지나면 완전 신규 복귀', after9days.deferred, 0);
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [6] 같은 소재 재탕 차단 — 내용어 유사도 (2026-08-21 신설)
+//
+// 이 절이 지키는 사건: 같은 이야기가 다른 문장으로 세 번 재발행됐다.
+//   08-14 "…철제 의수로 40년…기사"   ↔ 08-19 "…철제 의수로 40년 더 싸운 기사"  (5일 간격)
+//   08-17 "지하철 안내방송…남편을 잃은 여성" ↔ 08-20 "남편 목소리 안내방송…미망인" (3일 간격)
+//   08-17 "죽은 연어의 뇌…fMRI 실험"   ↔ 08-21 "죽은 연어의 뇌가 사람 사진에 '반응'했다" (4일 간격)
+// 셋 다 문자 bigram 으로는 0.18~0.29 라 임계 0.45 를 못 넘었다. 표현이 아니라 소재를 봐야 잡힌다.
+//
+// ⚠ 이 판정은 **코퍼스 의존적**이다 — 희소도를 기존 주제 전체에서 추정하기 때문에,
+//   비교 대상 1건만 넘기면 약해진다. 그래서 테스트도 실제와 같은 조건(누적 주제 목록)으로 세운다.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[6] 같은 소재 재탕 차단(내용어 유사도)');
+
+/**
+ * 배경 코퍼스 — 실제 발행 이력에서 뽑은 서로 무관한 주제 95건(fixtures/curiosity-subjects.json).
+ *
+ * ⚠ 왜 90건씩이나 쓰나: 소재 판정은 낱말의 희소도를 **기존 주제 전체**에서 추정한다.
+ *   코퍼스가 작으면 무엇이 드문 말인지 알 수 없어 판정이 약해진다. 실제로 지하철 안내방송 쌍은
+ *   코퍼스 30건에서 0.137, 90건에서 0.143 으로 임계(0.14)를 그때서야 넘는다. 작은 배열로
+ *   테스트하면 운영과 다른 조건을 재는 셈이라 통과·실패가 모두 무의미해진다.
+ */
+const CORPUS = JSON.parse(
+  readFileSync(new URL('./fixtures/curiosity-subjects.json', import.meta.url), 'utf8'),
+).subjects;
+
+/** 실제로 발행돼 버린 재탕 3쌍 — [기존 주제, 나중에 올라온 후보]. */
+const REPEATS = [
+  ['대포알에 오른손을 잃고 철제 의수로 40년을 더 싸운 기사',
+   '총알에 팔을 잃고 스프링 손을 만들어 30년 더 싸운 기사'],
+  ['지하철 안내방송이 사라지자 남편을 잃은 여성',
+   '지하철 안내방송을 들으려고 매일 같은 역에 앉아 있던 할머니'],
+  ['죽은 연어의 뇌가 사람의 감정을 읽었다는 fMRI 실험',
+   "죽은 연어의 뇌가 사람 사진에 '반응'했다"],
+];
+
+for (const [prior, candidate] of REPEATS) {
+  const done = [...CORPUS, prior];
+  const d = isNearDuplicate(candidate, done, cfg.pick.similarity);
+  ok(`재탕 차단: ${candidate.slice(0, 18)}…`, d.dup,
+    `bigram=${d.jaccard} topic=${d.topic} — 표현이 달라도 소재가 같으면 막아야 한다`);
+  ok(`  └ bigram 만으로는 못 잡던 건이다`, d.jaccard < (cfg.pick.similarity.bigram_jaccard ?? 0.45),
+    `bigram=${d.jaccard}`);
+}
+
+/**
+ * 오차단 방어 — 배경 코퍼스 95건을 서로 대조해 **과차단이 번지지 않는지** 고정한다.
+ *
+ * 0 을 요구하지 않는다. 실제 중복 최저값(0.145)과 최근접 오차단(0.181)이 겹쳐 있어 완전분리가
+ * 불가능하고, 놓치지 않는 쪽을 택한 대가로 아래 2쌍은 알면서 감수하는 비용이다:
+ *   · 비행기 창문 ↔ 마일리지 — 진짜 오차단(둘은 다른 이야기다)
+ *   · '만약 인류가 끝내 …못했다면' 2건 — 문형까지 같아 시청자에겐 실제로 비슷하게 보인다
+ * 목록으로 못 박아 두면 임계·불용어를 건드렸을 때 **새로운** 과차단이 생기는 즉시 드러난다.
+ */
+{
+  const pairs = new Set();
+  for (let i = 0; i < CORPUS.length; i++) {
+    const rest = CORPUS.filter((_, j) => j !== i);
+    const d = isNearDuplicate(CORPUS[i], rest, cfg.pick.similarity);
+    if (d.dup) pairs.add([CORPUS[i], d.against].sort().join(' ↔ '));
+  }
+  eq('서로 다른 주제끼리의 과차단은 알려진 2쌍뿐', pairs.size, 2);
+  ok('과차단 1: 비행기 창문 ↔ 마일리지',
+    [...pairs].some(p => p.includes('비행기 창문') && p.includes('마일리지')), [...pairs].join(' / '));
+  ok('과차단 2: 만약 인류가… 2건(문형 동일)',
+    [...pairs].some(p => p.includes('바퀴') && p.includes('불을 다루는')), [...pairs].join(' / '));
+}
+
+ok('어느 관문이 잡았는지 알려준다(topic)',
+  isNearDuplicate(REPEATS[2][1], [...CORPUS, REPEATS[2][0]], cfg.pick.similarity).by === 'topic');
+ok('표현 재탕은 wording 으로 잡힌다',
+  isNearDuplicate('총알 없는 총으로 자기 머리를 쐈던 배우 (공포탄의 진실)',
+    ['총알 없는 총으로 자기 머리를 쐈던 배우'], cfg.pick.similarity).by === 'wording');
+
+// 하위호환: 새 관문을 끄면 기존(표현) 판정만 남는다.
+ok('topic:false 면 소재 관문이 꺼진다',
+  !isNearDuplicate(REPEATS[2][1], [...CORPUS, REPEATS[2][0]],
+    { ...cfg.pick.similarity, topic: false }).dup);
+
+// 내용어 추출: 조사·상투어가 빠지고 알맹이만 남아야 한다.
+{
+  const t = contentTokens('죽은 연어의 뇌가 사람 사진에 반응했다');
+  ok('조사가 떨어진다(연어의→연어)', t.includes('연어'), JSON.stringify(t));
+  ok('상투어 사람 은 내용어에서 빠진다', !t.includes('사람'), JSON.stringify(t));
+}
+
+// 코퍼스가 모자라면 소재 관문은 **꺼진다**. 희소도를 못 재는 구간에서 근거 없이 차단하면
+// "호랑이는 주황색이 아니다" ↔ "유리는 액체가 아니다" 처럼 '아니다' 하나로 오차단이 난다(실측 0.155).
+{
+  const few = ['유리는 액체가 아니다', '혀의 맛 지도는 틀렸다'];
+  ok('코퍼스 부족 구간에선 소재 관문 미적용',
+    !isNearDuplicate('호랑이는 주황색이 아니다', few, cfg.pick.similarity).dup);
+  ok('그래도 표현 재탕은 코퍼스와 무관하게 잡힌다',
+    isNearDuplicate('총알 없는 총으로 자기 머리를 쐈던 배우 (공포탄의 진실)',
+      ['총알 없는 총으로 자기 머리를 쐈던 배우'], cfg.pick.similarity).dup);
+  // 가중치 계산 자체는 하한(MIN_CORPUS_FOR_IDF) 덕에 작은 코퍼스에서도 뒤집히지 않는다.
+  const t = topicSimilarity(REPEATS[2][1], REPEATS[2][0], tokenDocFreq([REPEATS[2][0]]));
+  ok('가중치 역전 없음(작은 코퍼스에서도 같은 소재는 양수)', t > 0.1, `topic=${t.toFixed(3)}`);
+}
+
+// 파이프라인 통합: 소재 중복은 similar_subject 로 영구 탈락한다.
+{
+  const prior = REPEATS[0][0];
+  const idxWithPrior = {};
+  CORPUS.concat([prior]).forEach((s, i) => { idxWithPrior['c' + i] = { status: 'uploaded', subject: s, angle: 'reveal', at: '2026-08-01T00:00:00Z' }; });
+  const r = filterCandidates({
+    items: [{ id: 'new', subject: REPEATS[0][1], angle: 'reveal', domain: '역사' }],
+    index: idxWithPrior, backlog: [], cfg, now: NOW,
+  });
+  eq('소재 재탕은 후보에서 제외', r.items.length, 0);
+  eq('사유는 similar_subject', r.blocked[0]?.reason, 'similar_subject');
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [7] 리뷰 지적 보강 (2026-08-21 코덱스 적대적 검증 반영)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[7] 재탕 차단 보강');
+
+// (a) 낱말 하나만 겹치는 건 소재 일치가 아니다 — 코퍼스 크기와 무관하게 성립해야 한다.
+{
+  // ⚠ '뇌' 는 1글자라 내용어에서 빠지고, '뇌가' 는 2글자라 stripJosa 가 손대지 않는다.
+  //    그래서 겹치는 건 {죽은, 연어} 2개다 — 형태소 분석 없이 어절을 자르는 방식의 한계이자
+  //    실제 동작이므로, 이상적인 값이 아니라 이 값을 고정한다.
+  eq('공유 내용어 개수 계산', sharedContentTokens('죽은 연어의 뇌가 반응했다', '죽은 연어의 뇌 실험'), 2);
+  // 용언('아니다') 하나만 겹치는 경우. 코퍼스에 '아니다' 로 끝나는 주제가 여럿 있어도
+  // 낱말 1개 공유로는 차단되면 안 된다.
+  ok('용언 하나만 겹치면 차단하지 않는다(코퍼스 작아도)',
+    !isNearDuplicate('고래는 물고기가 아니다', ['유리는 액체가 아니다'], cfg.pick.similarity).dup);
+  ok('용언 하나만 겹치면 차단하지 않는다(코퍼스 커도)',
+    !isNearDuplicate('고래는 물고기가 아니다', [...CORPUS, '유리는 액체가 아니다'], cfg.pick.similarity).dup);
+  // 반대로 같은 소재가 코퍼스에 실재하면 잡혀야 한다(대조군이 무력한 테스트가 아님을 보인다).
+  ok('코퍼스에 같은 소재가 있으면 잡는다',
+    isNearDuplicate('호랑이는 주황색이 아니다', CORPUS, cfg.pick.similarity).dup);
+  // 예전엔 코퍼스 30건 미만이면 관문을 통째로 껐다 — 그 사각지대가 없어졌는지 본다.
+  ok('작은 코퍼스에서도 진짜 재탕은 잡힌다',
+    isNearDuplicate("죽은 연어의 뇌가 사람 사진에 '반응'했다",
+      ['죽은 연어의 뇌가 사람의 감정을 읽었다는 fMRI 실험'], cfg.pick.similarity).dup);
+}
+
+// (b) 같은 배치 안에서 서로 재탕인 두 후보가 함께 뽑히면 안 된다(best_n>=2 경로).
+{
+  const mk = (id, subject) => ({ item: { id, subject, angle: 'reveal', domain: '과학' }, total: 0.9 });
+  const sorted = [
+    mk('a', '죽은 연어의 뇌가 사람의 감정을 읽었다는 fMRI 실험'),
+    mk('b', "죽은 연어의 뇌가 사람 사진에 '반응'했다"),
+    mk('c', '트로이 목마는 일리아스에 없다'),
+  ];
+  const taken = takeWithWhatifCap(sorted, 2, 0, { similarity: cfg.pick.similarity });
+  eq('2편을 뽑는다', taken.length, 2);
+  const ids = taken.map(t => t.item.id);
+  ok('같은 소재 두 건이 같은 배치에 함께 담기지 않는다', !(ids.includes('a') && ids.includes('b')), ids.join(','));
+  ok('대신 다른 소재가 채운다', ids.includes('c'), ids.join(','));
+  // similarity 를 안 주면 기존 동작(배치 내 중복 미검사) 그대로 — 하위호환.
+  eq('similarity 미지정이면 기존 동작', takeWithWhatifCap(sorted, 2, 0).map(t => t.item.id).join(','), 'a,b');
+}
+
+// (c) 운영 config 가 보정값에서 벗어나면 알아채야 한다(코드 기본값만 검증하면 드리프트를 놓친다).
+{
+  const shipped = loadConfig().pick?.similarity ?? {};
+  eq('배포 config 의 topic_jaccard 가 보정값 0.14', shipped.topic_jaccard, 0.14);
+  eq('배포 config 의 bigram_jaccard 가 0.45', shipped.bigram_jaccard, 0.45);
+  ok('배포 config 로도 실제 재탕이 차단된다',
+    isNearDuplicate(REPEATS[0][1], [...CORPUS, REPEATS[0][0]], shipped).dup);
+}
 
 console.log(`\n호기심 콘텐츠 룰(US-003): ${passN} pass / ${failN} fail`);
 process.exit(failN === 0 ? 0 : 1);

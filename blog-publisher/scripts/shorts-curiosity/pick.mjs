@@ -20,6 +20,10 @@
 import { makeLogger } from '../lib/log.mjs';
 import { loadConfig, pendingBacklog, loadIndex, loadBacklog, callClaude, extractJson, isMainModule, loadAgentBrief } from './lib.mjs';
 import { inventoryCount } from './inventory.mjs';
+import { stripJosa } from '../kernel/korean.mjs';
+// 조사 제거는 채널 지식이 아니라 한국어 처리다 → 정본은 kernel/korean.mjs.
+// 기존 소비자(cardnews-pick 테스트 등)를 위해 여기서 재export 한다.
+export { stripJosa };
 import '../lib/force-subscription.mjs';
 
 const log = makeLogger('curiosity/pick');
@@ -43,19 +47,6 @@ export function freshnessMap(backlog, index) {
 // US-003 콘텐츠 룰 (순수 함수 — 테스트: scripts/test/curiosity-content-rules.test.mjs)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 유사도 비교용 조사·어미 목록(긴 것 먼저 — 최장일치). */
-const JOSA = ['에서는', '으로는', '이라는', '에게서', '라는', '에서', '으로', '에게', '까지', '부터', '보다', '처럼', '만큼', '이나', '와의', '과의', '한테',
-  '은', '는', '이', '가', '을', '를', '의', '에', '와', '과', '도', '만', '로', '랑'];
-
-/** 어절 끝 조사 1개 절단(어간 2자 이상 보존). 유사도·태그 키워드 공용. */
-export function stripJosa(word) {
-  const w = String(word || '');
-  if (w.length < 3) return w;
-  for (const p of JOSA) {
-    if (w.endsWith(p) && w.length - p.length >= 2) return w.slice(0, -p.length);
-  }
-  return w;
-}
 
 /**
  * 주제 정규화 — 공백/괄호/따옴표/문장부호 제거 + 어절별 조사 절단 후 이어붙임.
@@ -92,19 +83,179 @@ export function subjectSimilarity(a, b, { min_chars = 6 } = {}) {
 }
 
 /**
+ * ── 소재 중복 2차 방어: 내용어 기반 유사도 (2026-08-21 신설) ────────────────
+ *
+ * 왜 문자 bigram 만으로 부족한가:
+ *   bigram 은 **표현이 닮은 것**을 잡지 문장이 **같은 사건을 말하는 것**을 못 잡는다.
+ *   실제로 같은 이야기가 다른 문장으로 재발행된 3쌍이 전부 통과했다(실측 2026-08-21):
+ *     · "대포알에 오른손을 잃고 철제 의수로 40년…기사"  ↔ "총알에 팔을 잃고 스프링 손을…기사"  j=0.212
+ *     · "지하철 안내방송이 사라지자 남편을 잃은 여성"      ↔ "지하철 안내방송을 들으려고…할머니"     j=0.182
+ *     · "죽은 연어의 뇌가 사람의 감정을 읽었다는 fMRI 실험" ↔ "죽은 연어의 뇌가 사람 사진에 '반응'했다" j=0.292
+ *   임계(0.45)를 이 값들까지 내리면 서로 다른 주제까지 쓸려 나간다 — 임계 조정으로는 못 푼다.
+ *
+ * 그래서 무엇을 보는가:
+ *   조사·군더더기를 털어낸 **내용어**를 비교하되, 흔한 낱말은 거의 무시하고 **드문 낱말이
+ *   겹칠 때만** 무겁게 센다(코퍼스 역빈도 가중). "연어·뇌"가 두 번 겹치면 같은 이야기지만
+ *   "사람·하나"가 겹치는 건 아무 뜻도 아니기 때문이다.
+ *
+ * ⚠ 이 방어선이 필요한 이유가 하나 더 있다: 팩트체크 정정이 **게이트 통과 뒤에** subject 를
+ *   고쳐 쓴다. 위 1번 쌍은 백로그 단계에선 "쇠손/30년" 과 "스프링 손/30년" 으로 서로 달랐는데
+ *   정정이 둘 다 같은 사실(철제 의수·40년)로 수렴시켰다. 발행 문구만 보면 j=0.609 로 명백한
+ *   중복인데 게이트가 본 값은 0.212 였다. 즉 게이트는 **정정 전** 문구로 판단할 수밖에 없으므로,
+ *   표현이 아니라 소재를 보는 측정이 있어야 한다.
+ */
+
+/** 내용어 판별에서 제외할 기능어·상투어. 이게 겹치는 건 소재가 같다는 신호가 아니다. */
+const CONTENT_STOPWORDS = new Set([
+  '그', '이', '저', '것', '수', '때', '더', '안', '못', '매우', '아주', '정말', '사실', '진짜',
+  '하나', '대해', '위해', '있는', '없는', '되는', '하는', '한', '두', '세', '네', '모든',
+  '어떤', '무슨', '왜', '어떻게', '만약', '전부', '가장', '제일', '먼저', '내일', '오늘',
+  '사람', '세계', '우리', '당신',
+]);
+
+/**
+ * 주제에서 내용어만 뽑는다. normalizeSubject 와 달리 **어절을 붙이지 않고** 낱말로 남긴다
+ * (낱말 단위로 겹침을 세야 "같은 사건"이 드러난다).
+ */
+export function contentTokens(s) {
+  return String(s || '')
+    .replace(/[()[\]{}<>《》「」『』"'\u201c\u201d\u2018\u2019«»]/g, ' ')
+    .replace(/[.,!?~·:;\-—–_/\\|+*=…%$#@&^]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/).filter(Boolean)
+    .map(stripJosa)
+    .filter(w => w.length >= 2 && !CONTENT_STOPWORDS.has(w));
+}
+
+/**
+ * 기존 주제 목록에서 낱말별 등장 문서수(df)를 센다. 흔한 낱말을 깎기 위한 재료.
+ * @returns {{df: Map<string, number>, n: number}}
+ */
+export function tokenDocFreq(subjects = []) {
+  const df = new Map();
+  let n = 0;
+  for (const s of subjects) {
+    if (!s) continue;
+    n++;
+    for (const t of new Set(contentTokens(s))) df.set(t, (df.get(t) || 0) + 1);
+  }
+  return { df, n };
+}
+
+/** 희소도 추정에 필요한 최소 코퍼스 규모. 이보다 적으면 이 값으로 간주해 가중치 역전을 막는다. */
+const MIN_CORPUS_FOR_IDF = 30;
+
+/**
+ * 소재가 같다고 인정하려면 **드문 낱말이 최소 이만큼** 겹쳐야 한다.
+ *
+ * 가중 유사도만 쓰면 낱말 하나가 우연히 겹친 짧은 문장이 임계를 넘을 수 있다. 실제로
+ * "호랑이는 주황색이 아니다" ↔ "유리는 액체가 아니다" 가 '아니다' 하나로 0.155 를 받아
+ * 오차단됐다. 처음엔 "코퍼스가 작을 때만 생기는 문제"로 보고 코퍼스 30건 미만에서 관문을 껐지만,
+ * 그건 증상 가림이었다 — 그 구간이 통째로 사각지대가 된다(코덱스 리뷰 지적).
+ *
+ * 2개 조건으로 바꾸면 근본이 막힌다 — 그리고 재현 결과가 나빠지지 않는다:
+ *   공유 1개(기존) → 중복 11건 차단·오차단 2   공유 2개 → **동일**   공유 3개 → 1건 놓침
+ * 덕분에 코퍼스 크기로 관문을 껐다 켰다 할 필요가 없어졌다(게이트 0·5·10·30 결과 모두 동일).
+ */
+const MIN_SHARED_CONTENT_TOKENS = 2;
+
+/** 두 주제가 공유하는 내용어 개수. */
+export function sharedContentTokens(a, b) {
+  const A = new Set(contentTokens(a));
+  const B = new Set(contentTokens(b));
+  let n = 0;
+  for (const t of A) if (B.has(t)) n++;
+  return n;
+}
+
+/**
+ * 내용어 가중 Jaccard — 겹친 낱말의 희소도 합 ÷ 전체 낱말의 희소도 합.
+ * 희소도는 log((n+1)/(df+0.5)) 로, 코퍼스에 흔할수록 0 에 가까워진다.
+ */
+export function topicSimilarity(a, b, corpus = { df: new Map(), n: 0 }) {
+  const A = new Set(contentTokens(a));
+  const B = new Set(contentTokens(b));
+  if (!A.size || !B.size) return 0;
+  // ⚠ 코퍼스가 작으면 희소도 추정이 뒤집힌다. 예를 들어 기존 주제가 1건뿐이면 그 주제의 모든
+  //   낱말이 df=1/n=1, 즉 "100% 문서에 등장 = 흔한 말"로 계산돼 **겹친 낱말일수록 가중치가
+  //   낮아진다.** 정보이론적으로는 맞는 계산이지만(1건으로는 희소도를 알 수 없다) 판정에는
+  //   해롭다. 채널 초기·테스트처럼 표본이 적을 때를 대비해 분모 모수에 하한을 둔다.
+  const n = Math.max(corpus.n, MIN_CORPUS_FOR_IDF);
+  const weight = t => Math.log((n + 1) / ((corpus.df.get(t) || 0) + 0.5));
+  let inter = 0, union = 0;
+  for (const t of new Set([...A, ...B])) {
+    const w = weight(t);
+    union += w;
+    if (A.has(t) && B.has(t)) inter += w;
+  }
+  return union > 0 ? inter / union : 0;
+}
+
+/**
  * 후보 주제가 기존 주제들과 사실상 같은 소재인지 판정.
- * 포함관계(한쪽이 다른쪽의 부분문자열) 또는 bigram Jaccard 임계 초과면 중복.
+ *
+ * 두 관문 중 하나만 걸려도 중복이다:
+ *   ① 표현 닮음 — 포함관계 또는 문자 bigram Jaccard >= bigram_jaccard (기존)
+ *   ② 소재 같음 — 내용어 가중 유사도 >= topic_jaccard (신설)
+ *
+ * topic_jaccard 기본 0.14 는 추정이 아니라 **이력 재현으로 측정한 값**이다. 발행 115편을
+ * 시간순으로 재생하되, 운영과 같은 조건을 지켰다 — 후보는 **백로그 문구**(게이트가 실제로 보는
+ * 것), 코퍼스는 **발행 문구**(index 에 쌓이는 것)를 썼다. 이 구분이 중요하다: 115편 중 33편
+ * (29%)이 게이트를 지난 뒤 팩트체크·대본 단계에서 문구가 바뀌었다. 발행 문구끼리 비교하면
+ * 실제보다 후하게 나온다(같은 사건이 정정으로 같은 표현에 수렴하므로).
+ *
+ * 측정 결과:
+ *   0.14 → 실제 중복 11건 전량 차단, 놓침 0, 오차단 2
+ *   0.15 → 놓침 1 (지하철 안내방송 쌍이 0.145 로 아슬하게 빠져나간다)
+ *   0.13 → 오차단 3, 0.12 → 오차단 4 (놓침은 계속 0)
+ * 즉 안전한 띠는 0.133~0.145 로 좁다. 가장 빡빡한 실제 중복이 0.145, 가장 가까운 오차단이
+ * 0.181 이라 완전 분리는 불가능하다. 그 비대칭을 의도적으로 재현(놓치지 않는) 쪽에 뒀다 —
+ * 후보를 잘못 막으면 다음 후보가 슬롯을 채우지만, 중복을 내보내면 구독자가 그걸 본다.
+ *
+ * 과적합 검증(시간 홀드아웃): 앞 60편으로 임계를 고르고 **뒤 55편에만** 적용했을 때
+ *   0.14 → 차단 10·오차단 0·놓침 0 / 0.15 → 놓침 1. 표본 밖에서도 같은 값이 이긴다.
+ *
+ * ⚠ 한계: 희소도를 기존 주제에서 추정하므로 코퍼스가 클수록 강해진다. 채널 초기에는 이 관문이
+ *   상대적으로 약하다(그 시기엔 재탕 자체가 드물다).
  */
 export function isNearDuplicate(subject, existing, opts = {}) {
   const threshold = opts.bigram_jaccard ?? 0.45;
+  const topicThreshold = opts.topic_jaccard ?? 0.14;
   const useSubstring = opts.substring !== false;
-  let worst = { dup: false, jaccard: 0, against: null };
+  const minShared = Number.isFinite(opts.min_shared_tokens) ? opts.min_shared_tokens : MIN_SHARED_CONTENT_TOKENS;
+  const useTopic = opts.topic !== false;
+  // df 는 후보마다 달라지지 않으므로 루프 밖에서 한 번만 만든다.
+  const corpus = useTopic ? tokenDocFreq(existing) : null;
+  let worst = { dup: false, jaccard: 0, topic: 0, against: null };
   for (const other of existing) {
     if (!other) continue;
     const { jaccard, contained } = subjectSimilarity(subject, other, opts);
-    const dup = (useSubstring && contained) || jaccard >= threshold;
-    if (dup) return { dup: true, jaccard: Number(jaccard.toFixed(3)), contained, against: other };
-    if (jaccard > worst.jaccard) worst = { dup: false, jaccard: Number(jaccard.toFixed(3)), against: other };
+    const topic = useTopic ? topicSimilarity(subject, other, corpus) : 0;
+    // 소재 관문은 두 조건을 **둘 다** 만족해야 한다 — 가중치가 높아도 겹친 낱말이 하나뿐이면
+    // 우연일 수 있다(MIN_SHARED_CONTENT_TOKENS 주석 참고).
+    const topicDup = useTopic
+      && topic >= topicThreshold
+      && sharedContentTokens(subject, other) >= minShared;
+    const dup = (useSubstring && contained) || jaccard >= threshold || topicDup;
+    if (dup) {
+      return {
+        dup: true,
+        jaccard: Number(jaccard.toFixed(3)),
+        topic: Number(topic.toFixed(3)),
+        contained,
+        // 어느 관문이 잡았는지 로그·테스트에서 구분할 수 있어야 한다.
+        by: (useSubstring && contained) || jaccard >= threshold ? 'wording' : 'topic',
+        against: other,
+      };
+    }
+    if (jaccard > worst.jaccard || topic > worst.topic) {
+      worst = {
+        dup: false,
+        jaccard: Number(Math.max(jaccard, worst.jaccard).toFixed(3)),
+        topic: Number(Math.max(topic, worst.topic).toFixed(3)),
+        against: other,
+      };
+    }
   }
   return worst;
 }
@@ -145,7 +296,7 @@ export function todayAngleCounts(index = {}, now = new Date()) {
 export function whatifCap(cfg = {}) {
   const explicit = cfg.pick?.daily_whatif_cap;
   if (Number.isFinite(explicit)) return Math.max(0, Math.floor(explicit));
-  const target = Number.isFinite(cfg.pick?.daily_target) ? cfg.pick.daily_target : 3;
+  const target = Number.isFinite(cfg.pick?.daily_target) ? cfg.pick.daily_target : 2;
   const ratio = Math.min(1, Math.max(0, cfg.backlog?.angles?.whatif_ratio ?? 0));
   return Math.max(0, Math.floor(target * ratio));
 }
@@ -180,7 +331,7 @@ export function filterCandidates({ items = [], index = {}, backlog = [], cfg = {
     if (simOn) {
       const d = isNearDuplicate(it.subject, done, sim);
       if (d.dup) {
-        blocked.push({ id: it.id, subject: it.subject, reason: 'similar_subject', against: d.against, jaccard: d.jaccard });
+        blocked.push({ id: it.id, subject: it.subject, reason: 'similar_subject', against: d.against, jaccard: d.jaccard, topic: d.topic, by: d.by });
         return false;
       }
     }
@@ -227,23 +378,38 @@ export function decideRelaxation({ strictCount = 0, relaxableCount = 0, inventor
  * (relaxable)를 채운다 — 상한을 무력화하는 게 아니라 빈 슬롯일 때만 1편씩 양보하는 것이다.
  * 채운 항목엔 relaxed=true 를 달아 상위·로그가 추적할 수 있게 한다.
  */
-export function takeWithWhatifCap(sorted = [], n = 1, allowance = 0, { relaxable = [], relaxIfShort = false } = {}) {
+export function takeWithWhatifCap(sorted = [], n = 1, allowance = 0, { relaxable = [], relaxIfShort = false, similarity = null } = {}) {
   const out = [];
   let usedWhatif = 0;
+  /**
+   * 같은 배치 안에서도 서로 재탕이면 안 된다.
+   *
+   * filterCandidates 는 후보를 **기발행 이력**과만 대조한다. best_n>=2(결손 보충 슬롯 등)로
+   * 한 번에 여러 편을 뽑을 때는 후보끼리 비교되지 않아, 비슷한 두 후보가 같은 날 나란히
+   * 나갈 수 있다 — 이력 대조를 아무리 강화해도 이 경로로 새어 나간다.
+   */
+  const acceptedSubjects = [];
+  const isBatchDuplicate = (item) => {
+    if (!similarity || similarity.enabled === false || !item?.subject || !acceptedSubjects.length) return false;
+    return isNearDuplicate(item.subject, acceptedSubjects, similarity).dup;
+  };
+  const accept = (entry) => { out.push(entry); if (entry.item?.subject) acceptedSubjects.push(entry.item.subject); };
   for (const s of sorted) {
     if (out.length >= n) break;
+    if (isBatchDuplicate(s.item)) continue;     // 이미 담은 후보와 같은 소재면 건너뛴다
     if (s.item?.angle === 'whatif') {
       if (usedWhatif >= allowance) continue;
       usedWhatif++;
     }
-    out.push(s);
+    accept(s);
   }
   if (!relaxIfShort) return out;
   const picked = new Set(out.map(s => s.item?.id));
   for (const s of relaxable) {
     if (out.length >= n) break;                 // 부족분만 — 최소 완화
     if (picked.has(s.item?.id)) continue;
-    out.push({ ...s, relaxed: true });
+    if (isBatchDuplicate(s.item)) continue;     // 완화 경로로도 재탕은 못 나간다
+    accept({ ...s, relaxed: true });
   }
   return out;
 }
@@ -307,7 +473,9 @@ async function scoreCandidates() {
     } else if (b.reason === 'whatif_disabled') {
       log.info(`후보 제외(whatif 성과 대응 일시중지): ${b.subject}`);
     } else {
-      log.info(`후보 제외(유사주제 중복 j=${b.jaccard}): ${b.subject} ↔ "${b.against}"`);
+      // 어느 관문이 잡았는지 남긴다 — 표현(wording) 과 소재(topic) 는 대응이 다르다.
+      const how = b.by === 'topic' ? `소재 t=${b.topic}` : `표현 j=${b.jaccard}`;
+      log.info(`후보 제외(유사주제 중복 ${how}): ${b.subject} ↔ "${b.against}"`);
     }
   }
   const inventory = availableInventory(index, cfg);
@@ -370,7 +538,7 @@ export async function pickTopN(n) {
   // reveal 로도 못 채우고 재고도 없으면(=슬롯 공백) 부족분만큼만 상한을 완화한다.
   // 재고가 있으면 완화하지 않는다 — 부족분은 상위의 재고 폴백이 채운다(완화보다 우선).
   const relaxIfShort = relaxable.length > 0 && inventory === 0;
-  const taken = takeWithWhatifCap(sorted, n, allowance, { relaxable, relaxIfShort });
+  const taken = takeWithWhatifCap(sorted, n, allowance, { relaxable, relaxIfShort, similarity: cfg.pick?.similarity });
   const picks = taken.map(s => ({
     item: s.item,
     score: s.total,

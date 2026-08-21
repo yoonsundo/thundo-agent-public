@@ -26,8 +26,12 @@ const log = makeLogger('curiosity/inventory');
  */
 export const OVERHAUL_CUTOFF = '2026-07-16T00:00:00Z';
 
-/** 목표 재고(편). config.inventory.target 없으면 이 기본값 — 3슬롯 하루치를 통째로 커버. */
-export const DEFAULT_INVENTORY_TARGET = 3;
+/**
+ * 목표 재고(편). 뜻은 "하루치를 통째로 커버한다" 이므로 **일일 발행 편수를 따라가야 한다.**
+ * config.inventory.target 도 pick.daily_target 도 없을 때만 쓰는 최후 기본값이다
+ * (2026-08-21 3편→2편 축소 때 이 상수만 3으로 남아 하루치보다 많은 재고를 목표로 잡고 있었다).
+ */
+export const DEFAULT_INVENTORY_TARGET = 2;
 /** 한 슬롯에서 보충 제작할 최대 편수(토큰·비용 가드). */
 export const DEFAULT_MAX_REFILL_PER_SLOT = 1;
 
@@ -67,7 +71,11 @@ export function inventoryTarget(cfg) {
   const envN = parseInt(process.env.CURIOSITY_INVENTORY_TARGET, 10);
   if (Number.isFinite(envN) && envN >= 0) return envN;
   const t = cfg?.inventory?.target;
-  return Number.isFinite(t) && t >= 0 ? t : DEFAULT_INVENTORY_TARGET;
+  if (Number.isFinite(t) && t >= 0) return t;
+  // 명시값이 없으면 하루치 = 일일 발행 편수. 편수를 바꿀 때 여기만 안 따라오면
+  // 재고 목표가 조용히 어긋난다(단일 출처는 pick.daily_target).
+  const daily = cfg?.pick?.daily_target;
+  return Number.isFinite(daily) && daily >= 0 ? daily : DEFAULT_INVENTORY_TARGET;
 }
 
 /** 슬롯당 최대 보충 편수. */

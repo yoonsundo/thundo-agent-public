@@ -21,6 +21,7 @@ import { appendAudit } from '../audit/append.mjs';
 import { loadSeoMetrics } from './gsc-collect.mjs';
 import { loadDemandCandidates, markDemandConsumed, NICHE_SEED_TERMS } from './keyword-demand.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('seo-targeting');
 
 const PIPELINE_CFG  = 'config/pipeline.json';
@@ -287,6 +288,6 @@ async function main() {
 
 // 단독 실행일 때만 main — buildNewKeywords export 를 테스트가 import 할 때
 // 실제 적용(파일 쓰기·게이트 실행)이 따라 돌면 안 된다.
-if (process.argv[1] && process.argv[1].endsWith('apply-targeting.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(1); });
 }

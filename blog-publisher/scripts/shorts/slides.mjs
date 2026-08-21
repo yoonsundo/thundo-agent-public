@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { REPO_ROOT, workDir } from './lib.mjs';
 import { splitGroups, kineticEnabled } from './captions.mjs';
 
-/** sudo 없는 WSL 우회 — crosspub/browser/context.mjs 와 동일 레시피. */
+/** sudo 없는 WSL 우회 — lib/browser-render.mjs 와 동일 레시피. */
 function vendorLdPath() {
   const base = join(REPO_ROOT, 'vendor', 'chromium-libs', 'root');
   if (!existsSync(base)) return null;

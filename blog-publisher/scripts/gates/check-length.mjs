@@ -7,19 +7,19 @@
  * exit: 0=통과 / 1=실패 / 2=실행오류
  */
 import { readFileSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+
+import { runGateCli, GateError, loadGateConfig } from './lib/gate-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, '../../');
-const CONFIG_PATH = join(REPO_ROOT, 'config', 'pipeline.json');
 
+// 설정은 config/pipeline.json 하나가 단일 출처다 — 읽기에 실패하면 코드의 기본값으로
+// 폴백하지 않고 던진다(옛 기준으로 조용히 판정하는 것이 최악이다).
 function loadConfig() {
-  try {
-    return JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
-  } catch {
-    return { length: { min: 1500, max: 2000 } };
-  }
+  return loadGateConfig(readFileSync);
 }
 
 /** YAML frontmatter 제거 후 본문 반환 */
@@ -44,19 +44,13 @@ function countKoreanSyllables(text) {
   return [...text].filter(c => c >= '가' && c <= '힣').length;
 }
 
-function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) {
-    process.stderr.write('Usage: check-length.mjs <draft.md>\n');
-    process.exit(2);
-  }
+export function evaluate(draftPath) {
 
   let raw;
   try {
     raw = readFileSync(resolve(draftPath), 'utf8');
   } catch (e) {
-    process.stderr.write(`check-length: 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const config = loadConfig();
@@ -77,8 +71,15 @@ function main() {
     evidence: { syllable_count },
   };
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(pass ? 0 : 1);
+  return result;
 }
 
-main();
+// CLI 로 직접 실행될 때만 돈다. 가드가 없으면 run-all-gates 가 import 하는 순간
+// 이 게이트가 stdout 을 쓰고 process.exit 해 버린다(2026-08-21 실측).
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'length',
+    evaluate,
+    usage: 'Usage: check-length.mjs <draft.md>',
+  });
+}

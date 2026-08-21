@@ -17,11 +17,12 @@
 
 import { readFileSync, readdirSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+
 import { paths, env, isMock } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 import { mdToHtml, figureHtml, isLikelyHtml } from '../lib/md-to-html.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('hub/blog-db');
 
 // ─── 환경 ─────────────────────────────────────────────────────────────────────
@@ -323,7 +324,7 @@ export async function migrateHtml() {
 }
 
 // CLI — 직접 실행될 때만(import 시 미실행). 동명 테스트 파일과 충돌 방지 위해 정확 비교.
-if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   const cmd = process.argv[2] || 'backfill';
   if (cmd === 'backfill') {
     backfill().then(code => process.exit(code));

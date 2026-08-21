@@ -10,6 +10,7 @@
 import { makeLogger } from '../lib/log.mjs';
 import { isCollectLive } from '../lib/config.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('reddit/hn');
 
 // ─── 니치 검색 쿼리 목록 ──────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ export async function fetchHN() {
 }
 
 // CLI 직접 실행
-if (process.argv[1] && process.argv[1].endsWith('hn.mjs')) {
+if (isMainModule(import.meta.url)) {
   fetchHN().then(items => {
     console.log(`\nHN 수집 완료: ${items.length}개`);
     items.slice(0, 5).forEach((item, i) => {

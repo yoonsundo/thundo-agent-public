@@ -77,7 +77,6 @@ const PROSE_PATHS = [
   /^runs\/.*\.md$/,
   /^docs\/reports\//,             // LLM·게이트웨이 브리핑
   /^benchmark\//,
-  /^state\/crosspub-queue\/.*\.md$/,
   /^state\/shorts-backlog\//,
 ];
 // ⚠ `docs/work-history/`·`docs/handoff/log/` 는 **제외하지 않는다** —

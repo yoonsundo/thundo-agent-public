@@ -18,9 +18,11 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeLogger } from '../lib/log.mjs';
+import { computeMetrics, renderMetrics, kstDay } from './metrics.mjs';
 import { paths } from '../lib/config.mjs';
 import { notify } from '../notify/index.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('curiosity-analytics-report');
 
 const ANALYTICS_PATH = join(paths.state, 'shorts-curiosity', 'analytics.jsonl');
@@ -167,11 +169,30 @@ export function buildChannelSummary(series, goal = DEFAULT_GOAL) {
 const n = (v) => (v == null ? '-' : Number(v).toLocaleString('ko-KR'));
 
 /**
+ * 가드레일 위반만 한 줄씩. 정상·산출불가는 아무것도 내지 않는다.
+ * Telegram Markdown 을 깨지 않도록 `*` `_` `[` 를 쓰지 않는다(브리핑 계약).
+ */
+export function breachLines(guardrails) {
+  const g = guardrails || {};
+  const out = [];
+  for (const key of ['continuity', 'diversity', 'repeat']) {
+    const r = g[key];
+    if (r && r.status === 'ok' && r.breach && r.note) out.push(`경고 — ${r.note}`);
+  }
+  return out;
+}
+
+/**
  * 알림·리포트 공용 브리핑 본문(평문). Telegram parse_mode=Markdown 을 깨지 않도록
  * `*` `_` `[` 를 쓰지 않는다.
  */
-export function buildBriefing({ rows, channel, daily, today, mock = false }) {
+export function buildBriefing({ rows, channel, daily, today, mock = false, guardrails = null }) {
   const lines = [`호기심 쇼츠 채널 일일 브리핑 (${today})${mock ? ' [mock 합성]' : ''}`];
+
+  // 가드레일 위반은 **맨 위에** 둔다. 리포트 파일에만 적으면 아무도 안 본다 —
+  // 조회수 수집 실패가 07-30부터 매일 경보를 냈는데도 한 달간 방치된 게 그 증거다.
+  // 정상일 때는 한 줄도 늘리지 않는다(조용해야 위반이 눈에 띈다).
+  for (const line of breachLines(guardrails)) lines.push(line);
 
   // 구독자 / 500 목표 / ETA
   if (channel.available) {
@@ -208,7 +229,7 @@ export function buildBriefing({ rows, channel, daily, today, mock = false }) {
   return lines.join('\n');
 }
 
-function renderMd(rows, channel, daily, today, briefing) {
+function renderMd(rows, channel, daily, today, briefing, metricsMd = '') {
   const lines = [
     `# 호기심 쇼츠 채널 — 유튜브 반응 리포트 (${today})`,
     '',
@@ -222,6 +243,10 @@ function renderMd(rows, channel, daily, today, briefing) {
     '```',
     '',
   ];
+
+  // 북극성·가드레일을 구독 목표보다 앞에 둔다 — 매일 처음 보는 것이 이 네 줄이어야 한다.
+  // 계측이 0인 상태로 설정을 조여 온 것이 이 채널의 실패 패턴이었다(2026-08-21 분석).
+  if (metricsMd) lines.push(metricsMd, '');
 
   lines.push('## 구독 목표', '');
   if (channel.available) {
@@ -323,11 +348,22 @@ async function main() {
   const rows = buildRows(groupById(snapshots));
   const daily = buildDailyDelta(rows);
   const channel = buildChannelSummary(chanSeries, goal);
-  const briefing = buildBriefing({ rows, channel, daily, today, mock: synthesized });
+  // 지표 산출이 실패해도 브리핑·리포트는 나가야 한다(비차단 계약).
+  let metrics = null, metricsMd = '';
+  try {
+    // ⚠ 지표 날짜는 **KST** 여야 한다. `today` 는 UTC(`toISOString`)라 02:00 KST 크론에서
+    //    항상 하루 전이 되고, 그러면 결방 판정이 그저께까지만 보고 다양성·재탕 창에서
+    //    가장 최근 발행일이 빠진다(어제 결방이 나도 오늘 경보가 안 뜬다).
+    metrics = computeMetrics({ today: kstDay(new Date().toISOString()), snapshots });
+    metricsMd = renderMetrics(metrics);
+  } catch (err) {
+    log.warn(`지표 산출 실패(리포트는 계속): ${err.message}`);
+  }
+  const briefing = buildBriefing({ rows, channel, daily, today, mock: synthesized, guardrails: metrics?.guardrails });
 
   mkdirSync(REPORT_DIR, { recursive: true });
   const docPath = join(REPORT_DIR, `curiosity-analytics-${today}.md`);
-  writeFileSync(docPath, renderMd(rows, channel, daily, today, briefing), 'utf8');
+  writeFileSync(docPath, renderMd(rows, channel, daily, today, briefing, metricsMd), 'utf8');
   log.info(`리포트 저장: ${docPath} (영상 ${rows.length}편)`);
   console.log(briefing);
 
@@ -366,6 +402,6 @@ async function main() {
   }));
 }
 
-if (process.argv[1] && process.argv[1].endsWith('analytics-report.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(1); });
 }

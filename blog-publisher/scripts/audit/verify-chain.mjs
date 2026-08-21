@@ -11,6 +11,7 @@ import { createInterface } from 'node:readline';
 import { paths, env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('audit/verify-chain');
 
 // ─── 해시 유틸 ────────────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ export async function verifyChain(logPath) {
 }
 
 // CLI
-if (process.argv[1] && process.argv[1].endsWith('verify-chain.mjs')) {
+if (isMainModule(import.meta.url)) {
   const logPath = process.argv[2];
   verifyChain(logPath).then(result => {
     console.log(JSON.stringify(result, null, 2));

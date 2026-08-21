@@ -98,7 +98,15 @@ for (const s of SPEC) {
   if (briefStart && briefEnd) ok(`${s.name}: BRIEF 마커 순서`, t.indexOf('<!-- BRIEF:start -->') < t.indexOf('<!-- BRIEF:end -->'));
 
   ok(`${s.name}: SEED 블록에 실행 경로 명시`, t.includes(s.script), s.script);
-  ok(`${s.name}: 역할·계약·원칙 섹션`, ['## 역할', '## 입력·출력 계약', '## 원칙'].every(h => t.includes(h)));
+  // 계약 섹션은 **분리형이 저장소 표준**이다 — meerkat 준수 감사 R6/R7 이
+  //   `## 입력 계약` 과 `## 출력 계약` 을 각각 요구하고, lion·beaver·bee·eagle·penguin·
+  //   elephant·crane·meerkat 등 이미 준수인 에이전트가 전부 그 형식이다(결합형 0개).
+  //   이 단언은 카드뉴스 5인에만 결합형(`## 입력·출력 계약`)을 강제해 R6/R7 과 정면
+  //   충돌했다 — 2026-08-21 에 둘을 동시에 만족시킬 수 없다는 것이 실제로 드러났다.
+  //   단언의 의도는 "역할·계약·원칙 섹션이 있는가" 이므로 두 형식 모두 받는다.
+  const hasContract = t.includes('## 입력·출력 계약')
+    || (t.includes('## 입력 계약') && t.includes('## 출력 계약'));
+  ok(`${s.name}: 역할·계약·원칙 섹션`, ['## 역할', '## 원칙'].every(h => t.includes(h)) && hasContract);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

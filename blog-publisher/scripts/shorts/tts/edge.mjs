@@ -85,8 +85,9 @@ export async function synthEdge(text, outPath, cfg) {
   const chunks = [];
   const result = await new Promise((resolve) => {
     let done = false;
+    let timer = null;   // finish 가 참조하므로 먼저 선언한다(TDZ 회피)
     const finish = (r) => { if (done) return; done = true; clearTimeout(timer); try { ws.close(); } catch {} resolve(r); };
-    const timer = setTimeout(() => finish({ ok: false, error: `타임아웃(${timeoutMs}ms)` }), timeoutMs);
+    timer = setTimeout(() => finish({ ok: false, error: `타임아웃(${timeoutMs}ms)` }), timeoutMs);
 
     ws.onopen = () => {
       const ts = new Date().toISOString();

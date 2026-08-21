@@ -27,6 +27,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { makeLogger } from './log.mjs';
 
+import { isMainModule } from './main-module.mjs';
 const log = makeLogger('source-extract');
 
 const CONFIG_PATH = 'config/source-pack.json';
@@ -112,16 +113,27 @@ export async function extractOne(url, cfg, { mock = process.env.RUN_MODE === 'mo
   return null;
 }
 
-/** run.json 에 excerpt_coverage 멱등 기입(record-gate 패턴 — 다른 필드 보존). */
+/**
+ * run.json 에 excerpt_coverage 멱등 기입(record-gate 패턴 — 다른 필드 보존).
+ * @param {string} runDir
+ * @param {string} coverage  `"추출성공/URL있음"` 형식(예: "3/5")
+ */
 function upsertRunCoverage(runDir, coverage) {
   const p = join(runDir, 'run.json');
+  /** @type {Record<string, any>} */
   let run = {};
   try { run = JSON.parse(readFileSync(p, 'utf8')); } catch { run = { date: runDir.split('/').pop() }; }
   run.excerpt_coverage = coverage;
   writeFileSync(p, JSON.stringify(run, null, 2));
 }
 
-export async function runExtract(selectionPath, { cfg = loadSourcePackConfig(), fetchImpl } = {}) {
+/**
+ * @param {string} selectionPath
+ * @param {object}   [opts]
+ * @param {any}      [opts.cfg]        source-pack 설정 뭉치. 기본 loadSourcePackConfig()
+ * @param {(url:any, cfg:any)=>Promise<string>} [opts.fetchImpl] 테스트 주입용 fetch 대체
+ */
+export async function runExtract(selectionPath, { cfg = loadSourcePackConfig(), fetchImpl = undefined } = {}) {
   const topicsDir = dirname(selectionPath);              // runs/<date>/topics
   const runDir = dirname(topicsDir);                     // runs/<date>
   const selection = JSON.parse(readFileSync(selectionPath, 'utf8'));
@@ -171,7 +183,7 @@ export async function runExtract(selectionPath, { cfg = loadSourcePackConfig(), 
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
-if (process.argv[1] && process.argv[1].endsWith('source-extract.mjs')) {
+if (isMainModule(import.meta.url)) {
   const i = process.argv.indexOf('--selection');
   const selectionPath = i > -1 ? process.argv[i + 1] : null;
   if (!selectionPath || !existsSync(selectionPath)) {

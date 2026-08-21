@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths } from '../lib/config.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
 
 function uid() {
@@ -224,7 +225,7 @@ export function normalizeFile(rawJsonPath) {
 }
 
 // CLI
-if (process.argv[1] && process.argv[1].endsWith('normalize.mjs')) {
+if (isMainModule(import.meta.url)) {
   const inputPath = process.argv[2];
   if (!inputPath) {
     console.error('사용법: node normalize.mjs <raw-json-path>');

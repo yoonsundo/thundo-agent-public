@@ -1,0 +1,36 @@
+{
+  "//": [
+    "타입 검사 설정 (F-15). 이 저장소는 5.6만 줄 무타입 JS 라 전체를 한 번에 켤 수 없다 —",
+    "scripts/** 전체에 checkJs 를 걸면 615건이 쏟아지고, 그 수는 아무도 안 보게 만든다.",
+    "그래서 **구조화된 코드부터** 검사하고 범위를 넓혀 간다.",
+    "",
+    "지금 검사 대상:",
+    "  scripts/kernel/**  — 순수 도메인. 부작용이 없어 타입이 가장 정확하게 잡힌다",
+    "  scripts/lib/**     — 공용 어댑터·유틸",
+    "  scripts/gates/**   — 발행 차단권을 가진 판정 코드",
+    "",
+    "🔴 검사 대상이 아닌 것(조용한 제외가 아니라 명시적 보류):",
+    "  scripts/cardnews/** scripts/shorts*/** scripts/hub/** scripts/report/**",
+    "  scripts/seo/** scripts/watchdog/** scripts/test/** 등 — 총 615건 미해결.",
+    "  범위를 넓힐 때는 include 에 한 디렉터리씩 추가하고 그 디렉터리 오류를 0 으로 만든 뒤 커밋한다.",
+    "",
+    "strict 는 아직 끄고 시작한다. 켜면 JSDoc 없는 코드가 전부 걸려 도입 자체가 막힌다."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": [
+    "scripts/kernel/**/*.mjs",
+    "scripts/lib/**/*.mjs",
+    "scripts/gates/**/*.mjs"
+  ]
+}

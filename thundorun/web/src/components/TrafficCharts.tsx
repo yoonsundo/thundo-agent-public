@@ -178,7 +178,8 @@ export function BarList({
               <span className="legend-value">{it.value.toLocaleString()}</span>
             </div>
             <div className="progress" data-tone={tone}>
-              <span style={{ width: `${w}%` }} />
+              {/* 채움은 width 가 아니라 transform — 0%면 -100%, 60%면 -40%로 민다(globals.css `.progress > span`). */}
+              <span style={{ transform: `translateX(${w - 100}%)` }} />
             </div>
           </div>
         );

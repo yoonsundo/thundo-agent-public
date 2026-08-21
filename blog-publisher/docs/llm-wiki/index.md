@@ -32,8 +32,8 @@
 
 ## 엔티티 (entities)
 
-- [entities/agent-registry.md](entities/agent-registry.md) — 15개 에이전트 레지스트리(역할·도구·단계·계약 요약)
-- [entities/evolution/index.md](entities/evolution/index.md) — 에이전트별 진화(버전) 연표 카탈로그(15) — agent.md 본문 비대화 없이 분리 관리
+- [entities/agent-registry.md](entities/agent-registry.md) — 45개 에이전트 레지스트리(역할·도구·단계·계약 요약)
+- [entities/evolution/index.md](entities/evolution/index.md) — 에이전트별 진화(버전) 연표 카탈로그(16) — agent.md 본문 비대화 없이 분리 관리
 
 ### 진화 연표 (entities/evolution) — agent.md가 포인터로 참조
 
@@ -52,6 +52,7 @@
 - [entities/evolution/elephant.md](entities/evolution/elephant.md) — elephant 진화(v3)
 - [entities/evolution/crane.md](entities/evolution/crane.md) — crane 진화(v1)
 - [entities/evolution/meerkat.md](entities/evolution/meerkat.md) — meerkat 진화(v1)
+- [entities/evolution/woodpecker.md](entities/evolution/woodpecker.md) — woodpecker 진화(v1)
 
 ## 빠른 참조
 

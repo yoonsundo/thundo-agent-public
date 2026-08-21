@@ -1,6 +1,6 @@
-# 엔티티 — 에이전트 진화 이력 카탈로그 (15)
+# 엔티티 — 에이전트 진화 이력 카탈로그 (16)
 
-> 15개 에이전트의 EVOLVE-BLOCK 버전 연표 페이지 목록. 메커니즘 일반은
+> 16개 에이전트의 EVOLVE-BLOCK 버전 연표 페이지 목록. 메커니즘 일반은
 > [../../concepts/self-evolution.md](../../concepts/self-evolution.md), 현재 버전 요약은
 > [../agent-registry.md](../agent-registry.md).
 
@@ -36,6 +36,10 @@
 - [elephant.md](elephant.md) — 거버넌스·회귀게이트 판정 (현재 v3)
 - [crane.md](crane.md) — 주치의 — 건강검진·자가치유·에스컬레이션 (현재 v1)
 - [meerkat.md](meerkat.md) — 관제탑 — LLM 위키 운영·준수 감사 (현재 v1)
+
+## 관제·관측 (주기)
+
+- [woodpecker.md](woodpecker.md) — 인프라 관제(infra-observer) — 읽기전용 게이트웨이 점검·브리핑 (현재 v1)
 
 ## 관련
 

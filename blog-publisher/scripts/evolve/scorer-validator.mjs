@@ -15,6 +15,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 
 import { claudeText } from '../lib/claude-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 const LABELS_PATH = 'benchmark/validator-labels.json';
 const CRITERIA_PATH = 'config/aeo-criteria.json';
 const W = { tpr: 50, tnr: 40, dup: 10 };
@@ -143,7 +144,7 @@ function selfTest() {
 
 // ── CLI ──────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   if (argv.includes('--self-test')) { selfTest(); process.exit(0); }
   if (argv.includes('--dry')) {
     const set = loadLabeledSet();

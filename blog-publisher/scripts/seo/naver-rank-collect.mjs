@@ -18,6 +18,7 @@ import {
 } from './naver-search.mjs';
 import { loadSeoMetrics } from './gsc-collect.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('naver-rank-collect');
 
 const RANK_PATH = process.env.NAVER_RANK_PATH || 'state/naver-rank.jsonl';
@@ -124,6 +125,6 @@ async function main() {
   log.info(`state/naver-rank.jsonl upsert 완료: ${records.length}쿼리 (노출확인 ${found}, 미노출 ${records.length - found})`);
 }
 
-if (process.argv[1] && process.argv[1].endsWith('naver-rank-collect.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(1); });
 }

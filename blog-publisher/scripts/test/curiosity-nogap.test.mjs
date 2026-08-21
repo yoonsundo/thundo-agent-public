@@ -286,11 +286,27 @@ console.log('\n(f) 재고 부족 판정·보충 필요량');
   const activeCfg = { ...CFG, backlog: { ...CFG.backlog, angles: { whatif_ratio: 0.35 } } };
   eq('whatif 활성 비율이면 혼합 재고 모두 업로드 가능', inventory.inventoryCount(mixedIdx, activeCfg), 2);
 
-  const a1 = inventory.assessInventory({ cfg: CFG, index: idx });
-  eq('목표 기본값 3', a1.target, 3);
+  /**
+   * 재고 목표는 "하루치를 통째로 커버한다"는 뜻이므로 **일일 발행 편수를 따라가야 한다.**
+   * 예전엔 3 으로 못 박혀 있어서 2026-08-21 에 3편→2편으로 줄일 때 이 값만 뒤처졌다.
+   * 그래서 상수를 단언하지 않고 daily_target 을 바꿔 가며 **파생되는지**를 본다.
+   */
+  const cfgDaily3 = { ...CFG, pick: { ...CFG.pick, daily_target: 3 } };
+  const a1 = inventory.assessInventory({ cfg: cfgDaily3, index: idx });
+  eq('일일 3편이면 재고 목표도 3', a1.target, 3);
   eq('부족 1편', a1.deficit, 1);
   eq('보충 요청 1편(슬롯 상한)', a1.refillN, 1);
   eq('부족 판정 true', a1.needsRefill, true);
+
+  const cfgDaily2 = { ...CFG, pick: { ...CFG.pick, daily_target: 2 } };
+  const aDaily2 = inventory.assessInventory({ cfg: cfgDaily2, index: idx });
+  eq('일일 2편이면 재고 목표도 2', aDaily2.target, 2);
+  eq('재고 2편이면 부족 없음', aDaily2.deficit, 0);
+  eq('부족 없으면 보충 안 함', aDaily2.needsRefill, false);
+
+  // 명시값(config.inventory.target)이 있으면 그쪽이 이긴다 — 운영에서 버퍼를 더 두고 싶을 때.
+  const cfgExplicit = { ...CFG, pick: { ...CFG.pick, daily_target: 2 }, inventory: { target: 4 } };
+  eq('명시 목표가 daily_target 파생보다 우선', inventory.assessInventory({ cfg: cfgExplicit, index: idx }).target, 4);
 
   process.env.CURIOSITY_INVENTORY_TARGET = '5';
   process.env.CURIOSITY_INVENTORY_MAX_REFILL = '2';

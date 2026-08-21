@@ -12,10 +12,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { signOut } from 'next-auth/react';
 import type { LucideIcon } from 'lucide-react';
-import {
-  ArrowLeft, Bot, FolderKanban, GalleryVerticalEnd, LayoutDashboard, LogOut, Megaphone, Menu,
-  MessageCircleQuestion, MessageSquare, ShieldCheck, SlidersHorizontal, Sparkles,
-} from 'lucide-react';
+import { ArrowLeft, Bot, FolderKanban, GalleryVerticalEnd, Gavel, LayoutDashboard, LogOut, Megaphone, Menu, MessageCircleQuestion, MessageSquare, ShieldCheck, SlidersHorizontal, Sparkles } from 'lucide-react';
 import ThemeToggle from '@/components/ui/ThemeToggle';
 import { SHOW_NOTICES } from '@/lib/featureFlags';
 
@@ -45,6 +42,8 @@ const NAV_GROUPS: Array<{ title: string; items: AdminNavItem[] }> = [
     { href: '/admin/chat',         label: '에이전트 채팅',       icon: MessageSquare },
     { href: '/admin/orchestrator', label: '오케스트레이션 콘솔', icon: SlidersHorizontal },
     { href: '/admin/remediation',  label: '자가 조치 승인',      icon: ShieldCheck },
+    // 경영회의가 "사람이 정해야 함"으로 넘긴 안건. 예전엔 화면에 라벨만 뜨고 갈 곳이 없었다.
+    { href: '/admin/board',        label: '경영회의 승인함',     icon: Gavel },
   ] },
   { title: '기타', items: [
     { href: '/saju/amond', label: '아몬드 (사주 관제)', icon: Sparkles },

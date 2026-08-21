@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { paths, env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('audit/supabase-mirror');
 
 const TABLE = env('SUPABASE_AUDIT_TABLE') || 'audit_log';
@@ -138,7 +139,7 @@ export async function mirrorPending() {
 }
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
-if (process.argv[1] && process.argv[1].endsWith('supabase-mirror.mjs')) {
+if (isMainModule(import.meta.url)) {
   mirrorPending().then((r) => {
     console.log(JSON.stringify(r));
     process.exit(r.skipped ? 2 : (r.failed > 0 ? 1 : 0));

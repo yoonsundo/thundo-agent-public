@@ -14,6 +14,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { isMainModule } from '../lib/main-module.mjs';
+
+import { runGateCli, GateError } from './lib/gate-cli.mjs';
 // ─── 기관명 패턴 ──────────────────────────────────────────────────────────────
 // 이 기관명이 본문에 나타나고 수치(%)나 숫자+명 등이 같은 문장에 있으면 인용 필요
 // export — 게이트16(check-source-fidelity)이 "외부 귀속 수치" 범위 한정에 재사용한다(ralplan v6 S3).
@@ -164,28 +167,25 @@ function analyze(raw) {
 
 // ─── 진입점 ──────────────────────────────────────────────────────────────────
 
-function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) {
-    process.stderr.write('Usage: check-sources.mjs <draft.md>\n');
-    process.exit(2);
-  }
+export function evaluate(draftPath) {
 
   let raw;
   try {
     raw = readFileSync(resolve(draftPath), 'utf8');
   } catch (e) {
-    process.stderr.write(`check-sources: 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const result = analyze(raw);
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(result.pass ? 0 : 1);
+  return result;
 }
 
 // 단독 실행일 때만 main — 게이트16이 ORG_NAMES_RE 를 import 할 때 게이트가 따라 돌면 안 된다.
-if (process.argv[1] && process.argv[1].endsWith('check-sources.mjs')) {
-  main();
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'sources',
+    evaluate,
+    usage: 'Usage: check-sources.mjs <draft.md>',
+  });
 }

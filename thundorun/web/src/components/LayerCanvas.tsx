@@ -3,6 +3,7 @@
 import { useRef, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import { Layer, ASPECT_PRESETS, EditorTab } from '@/types/editor';
+import { clampLayerMove, clampLayerResize } from '@/lib/editorGeometry';
 
 interface LayerCanvasProps {
   layers: Layer[];
@@ -122,26 +123,32 @@ export default function LayerCanvas({
       const dy = pos.y - state.startY;
 
       if (state.type === 'move') {
-        // 최소 30px은 캔버스 안에 유지
-        const area = canvasAreaRef.current;
-        const areaW = area?.clientWidth ?? 9999;
-        const areaH = area?.clientHeight ?? 9999;
+        // ⚠ 한계는 **작업공간** 크기로 잰다. 좌표(getPointerPos)가 작업공간 기준이기 때문이다.
+        //    예전엔 크롭 프레임(canvasAreaRef) 크기로 쟀는데, 프레임이 작업공간보다 훨씬 좁아서
+        //    사진이 프레임 폭 근처에서 막혀 **오른쪽으로 못 갔다**(2026-08-20 사용자 지적).
+        //    프레임 밖으로 나가는 건 정상이다 — 저장할 때 프레임 안쪽만 잘린다.
+        const ws = workspaceRef.current;
         const layer = layers.find((l) => l.id === state.layerId);
         if (!layer) return;
-        const newX = state.startLayerX + dx;
-        const newY = state.startLayerY + dy;
-        onUpdateLayer(state.layerId, {
-          x: Math.max(-layer.width + 30, Math.min(areaW - 30, newX)),
-          y: Math.max(-layer.height + 30, Math.min(areaH - 30, newY)),
-        });
+        onUpdateLayer(
+          state.layerId,
+          clampLayerMove({
+            x: state.startLayerX + dx,
+            y: state.startLayerY + dy,
+            width: layer.width,
+            height: layer.height,
+            workspaceWidth: ws?.clientWidth ?? 0,
+            workspaceHeight: ws?.clientHeight ?? 0,
+          }),
+        );
       } else {
-        onUpdateLayer(state.layerId, {
-          width: Math.max(30, state.startLayerW + dx),
-          height: Math.max(30, state.startLayerH + dy),
-        });
+        onUpdateLayer(
+          state.layerId,
+          clampLayerResize(state.startLayerW + dx, state.startLayerH + dy),
+        );
       }
     },
-    [onUpdateLayer, getPointerPos, canvasAreaRef, layers]
+    [onUpdateLayer, getPointerPos, workspaceRef, layers]
   );
 
   const handlePointerUp = useCallback(() => {
@@ -173,10 +180,10 @@ export default function LayerCanvas({
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const scale = dist / pinchState.current.startDist;
-      onUpdateLayer(pinchState.current.layerId, {
-        width: Math.max(30, pinchState.current.startW * scale),
-        height: Math.max(30, pinchState.current.startH * scale),
-      });
+      onUpdateLayer(
+        pinchState.current.layerId,
+        clampLayerResize(pinchState.current.startW * scale, pinchState.current.startH * scale),
+      );
     }
   }, [onUpdateLayer]);
 

@@ -4,79 +4,39 @@
  * 입력: argv[2] = 초안 .md 절대경로
  * 출력: stdout JSON 1줄
  * exit: 0=통과 / 1=실패 / 2=실행오류
+ *
+ * 2026-08-21(F-17): 발행물 서명을 매번 새로 계산하느라 61~67초가 걸렸고,
+ * `run-all-gates` 의 게이트별 상한 60초에 SIGKILL 당해 초안이 폐기되고 있었다.
+ * 서명 산출식(kernel/minhash.mjs)은 **그대로 두고** 발행물 서명만 캐시한다
+ * (lib/dup-index.mjs). 매 실행에 새로 계산하는 것은 초안 1편뿐이라 판정은 동일하고
+ * 소요만 61s → 1s 미만이 된다. 캐시가 없거나 깨져도 전량 재계산으로 degrade 한다.
  */
-import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { charFourgrams, minHash, jaccardFromSigs } from '../kernel/minhash.mjs';
+import { ensureSignatures, listPublished, stripFrontmatter, PUBLISHED_DIR } from '../lib/dup-index.mjs';
+
+
+import { runGateCli, GateError, loadGateConfig } from './lib/gate-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, '../../');
-const PUBLISHED_DIR = join(REPO_ROOT, 'published');
-const CONFIG_PATH = join(REPO_ROOT, 'config', 'pipeline.json');
 
+// 설정은 config/pipeline.json 하나가 단일 출처다 — 읽기에 실패하면 코드의 기본값으로
+// 폴백하지 않고 던진다(옛 기준으로 조용히 판정하는 것이 최악이다).
 function loadConfig() {
-  try {
-    return JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
-  } catch {
-    return { dedup: { max_jaccard: 0.25 } };
-  }
+  return loadGateConfig(readFileSync);
 }
 
-/** YAML frontmatter 제거 후 본문 반환 */
-function stripFrontmatter(text) {
-  const m = text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
-  return m ? m[1] : text;
-}
-
-/** 문자 4-gram 집합 생성 */
-function charFourgrams(text) {
-  const chars = [...text.replace(/\s+/g, ' ')];
-  const grams = new Set();
-  for (let i = 0; i <= chars.length - 4; i++) {
-    grams.add(chars.slice(i, i + 4).join(''));
-  }
-  return grams;
-}
-
-/** MinHash 서명 (k=128, MurmurHash 대신 sha256 슬라이싱) */
-function minHash(grams, k = 128) {
-  const sig = new Array(k).fill(Infinity);
-  for (const gram of grams) {
-    for (let i = 0; i < k; i++) {
-      const h = createHash('sha256')
-        .update(`${i}:${gram}`)
-        .digest();
-      // 32비트 부호없는 정수
-      const val = h.readUInt32BE(0);
-      if (val < sig[i]) sig[i] = val;
-    }
-  }
-  return sig;
-}
-
-/** MinHash 서명 두 개의 추정 Jaccard */
-function jaccardFromSigs(a, b) {
-  let same = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === b[i]) same++;
-  }
-  return same / a.length;
-}
-
-function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) {
-    process.stderr.write('Usage: check-dup.mjs <draft.md>\n');
-    process.exit(2);
-  }
+export function evaluate(draftPath) {
 
   let draftRaw;
   try {
     draftRaw = readFileSync(resolve(draftPath), 'utf8');
   } catch (e) {
-    process.stderr.write(`check-dup: 초안 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`초안 파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const config = loadConfig();
@@ -87,8 +47,7 @@ function main() {
 
   if (draftGrams.size === 0) {
     const result = { gate: 'dup', pass: false, reason: '본문이 비어있어 4-gram 생성 불가', evidence: { max_jaccard: 1, matched_file: null } };
-    process.stdout.write(JSON.stringify(result) + '\n');
-    process.exit(1);
+    return result;
   }
 
   const draftSig = minHash(draftGrams);
@@ -99,32 +58,25 @@ function main() {
   const IS_MOCK = process.env.RUN_MODE === 'mock';
   const todayPrefix = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
+  const publishedFiles = listPublished();
+
+  // 서명은 인덱스에서 가져온다. 새로 발행된 파일(하루 3편)만 여기서 계산되고
+  // 갱신분은 인덱스에 반영된다. 필터(mock 배치·자기 자신)는 **비교 시점**에 거는데,
+  // 인덱싱 시점에 걸면 그 파일이 캐시에서 빠져 다음 런이 다시 계산하기 때문이다.
+  const { sigs } = ensureSignatures({ files: publishedFiles });
+
   let maxJ = 0;
   let matchedFile = null;
-
-  let publishedFiles;
-  try {
-    publishedFiles = readdirSync(PUBLISHED_DIR).filter(f => f.endsWith('.md'));
-  } catch {
-    publishedFiles = [];
-  }
 
   for (const fname of publishedFiles) {
     // mock 모드: 오늘 날짜 배치 내 파일은 비교 제외
     if (IS_MOCK && fname.startsWith(todayPrefix)) continue;
-    const fpath = join(PUBLISHED_DIR, fname);
     // 자기 자신 건너뜀
-    if (resolve(fpath) === resolve(draftPath)) continue;
-    let raw;
-    try {
-      raw = readFileSync(fpath, 'utf8');
-    } catch {
-      continue;
-    }
-    const body = stripFrontmatter(raw);
-    const grams = charFourgrams(body);
-    if (grams.size === 0) continue;
-    const sig = minHash(grams);
+    if (resolve(join(PUBLISHED_DIR, fname)) === resolve(draftPath)) continue;
+
+    const sig = sigs.get(fname);
+    if (!sig) continue;                 // 읽기 실패·빈 본문 → 원본과 동일하게 건너뜀
+
     const j = jaccardFromSigs(draftSig, sig);
     if (j > maxJ) {
       maxJ = j;
@@ -145,8 +97,15 @@ function main() {
     },
   };
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(pass ? 0 : 1);
+  return result;
 }
 
-main();
+// CLI 로 직접 실행될 때만 돈다. 가드가 없으면 run-all-gates 가 import 하는 순간
+// 이 게이트가 stdout 을 쓰고 process.exit 해 버린다(2026-08-21 실측).
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'dup',
+    evaluate,
+    usage: 'Usage: check-dup.mjs <draft.md>',
+  });
+}

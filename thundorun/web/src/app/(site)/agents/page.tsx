@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 
 import { Rocket, Mail, Bird, Activity, Globe, RefreshCw, Stethoscope } from 'lucide-react';
 import { getActiveAgents } from '@/server/agents';
+import AgentAvatar from '@/components/ui/AgentAvatar';
 import Empty from '@/components/state/Empty';
 import PipelineTree from './PipelineTree';
 
@@ -81,21 +82,10 @@ export default async function AgentsPage() {
         <div className="grid-3">
           {agents.map((agent) => (
             <div key={agent.id} id={`agent-${agent.id}`} className="card" style={{ scrollMarginTop: 96 }}>
-              {/* 아바타 — 규칙 6(사진은 흑백) */}
-              {agent.image_url ? (
-                <span className="avatar avatar-xl" style={{ overflow: 'hidden' }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={agent.image_url}
-                    alt={agent.name}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                </span>
-              ) : (
-                <span className="avatar avatar-xl avatar-neutral">
-                  {agent.name.slice(0, 1)}
-                </span>
-              )}
+              {/* 아바타 — 마스코트 마크 · lucide 역할 아이콘 · 모노그램 3층 (DESIGN.md §12.12).
+                  ⚠ 이전에는 `name.slice(0, 1)` 이라 6개 군 13명이 첫 글자에서 충돌했다
+                  (라=라이언·라이노·라쿤 등). 사진 처리는 §12.11 — 흑백으로 만들지 않는다. */}
+              <AgentAvatar id={agent.id} name={agent.name} imageUrl={agent.image_url} />
 
               {/* 이름 */}
               <span className="card-title">{agent.name}</span>

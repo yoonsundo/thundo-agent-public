@@ -13,7 +13,9 @@
  *
  * 표현은 Modernist Kit 전용(DESIGN.md §4.8 정의목록 · §4.5 상태 태그 · §4.11 아코디언).
  * 단계 흐름은 `.dl`(단계=dt / 노드=dd)로 세로 흐름을 유지한다 — 7열 그리드는 키트에 없다.
- * 마스코트 이모지는 규칙 8(이모지 금지)에 따라 제거하고 에이전트 id·`.avatar` 이니셜로 표기한다.
+ * 마스코트 이모지는 규칙 8(이모지 금지)에 따라 쓰지 않는다. 한때 그 자리를 `.avatar` 이니셜
+ * (id 앞 두 글자)로 채웠으나 2026-08-21 제거했다 — 이름이 바로 옆에 그대로 적혀 있어
+ * "Li lion" 처럼 같은 정보를 두 번 보여줄 뿐이었고, 원형 배지가 시선만 먼저 끌었다.
  */
 
 import Link from 'next/link';
@@ -35,11 +37,6 @@ const STAGES: { key: string; label: string; ids: string[] }[] = [
 const VALIDATOR_LABEL: Record<string, string> = {
   pass: '통과', blocked: '차단', unreached: '미도달',
 };
-
-/** 에이전트 id → 아바타 이니셜(이모지 대체). */
-function initials(id: string): string {
-  return id.slice(0, 2).toUpperCase();
-}
 
 /**
  * 데이터로 흘러든 기하문자·이모지를 **렌더 직전에** 평문화한다 (규칙 8 / §12.8).
@@ -101,7 +98,6 @@ export default function PipelineTree({ pipeline, agents, date }: Props) {
         aria-expanded={selected === 'lion'}
         onClick={() => toggle('lion')}
       >
-        <span className="avatar avatar-neutral">{initials('lion')}</span>
         lion
         <span className="text-muted">오케스트레이터 — 일일 런 전체 조율·자가치유</span>
         <span className="spacer" />
@@ -271,7 +267,6 @@ function NodeDetail({
   return (
     <div className="card card-outline stack">
       <div className="row">
-        <span className="avatar avatar-neutral">{initials(agent.id)}</span>
         <div>
           <div>
             <b>{agent.id}</b> <span className="text-muted">— {plain(agent.desc)}</span>

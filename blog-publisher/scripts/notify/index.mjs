@@ -9,6 +9,7 @@ import { sendTelegram } from './telegram.mjs';
 import { sendDiscord }  from './discord.mjs';
 import { makeLogger }   from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('notify');
 
 /** §D6 이벤트 타입 열거 */
@@ -24,8 +25,6 @@ export const EVENTS = Object.freeze({
   BUDGET_KILL:      'BUDGET_KILL',
   MISSED_RUN:       'MISSED_RUN',
   TRIPWIRE:         'TRIPWIRE',
-  CROSSPUB_PENDING: 'CROSSPUB_PENDING',
-  CROSSPUB_SESSION_EXPIRED: 'CROSSPUB_SESSION_EXPIRED',
   // 일일 영속화(git push) 실패 — 2026-07-23 신설.
   // 이전에는 `|| echo "push 실패"` 로 gitignore 된 runs/*.log 에만 남아
   // origin/main 이 9일간 정지한 걸 아무도 몰랐다. 이제 채널로 드러낸다.
@@ -63,7 +62,7 @@ export async function notify(event, payload = {}) {
 }
 
 // CLI 직접 실행 (테스트용)
-if (process.argv[1] && process.argv[1].endsWith('index.mjs')) {
+if (isMainModule(import.meta.url)) {
   const event   = process.argv[2] || 'RUN_START';
   const payload = { url: 'https://example.com', status: 200, sha: 'abc1234', details: 'CLI 테스트' };
   notify(event, payload).then(r => {

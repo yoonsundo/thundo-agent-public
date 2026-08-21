@@ -22,6 +22,7 @@ import { spawnSync }                from 'node:child_process';
 import { mockImageSVG }             from '../lib/mock-llm.mjs';
 import { paths, isMock, env }       from '../lib/config.mjs';
 import { makeLogger }               from '../lib/log.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 import '../lib/force-subscription.mjs'; // 구독 강제(claude 직접 spawn 방어)
 
 const log = makeLogger('claude-designer');
@@ -133,7 +134,7 @@ export async function designClaude(topic, draft, opts = {}) {
 }
 
 // CLI 직접 실행 (디버그)
-if (process.argv[1] && process.argv[1].endsWith('claude-designer.mjs')) {
+if (isMainModule(import.meta.url)) {
   const title = process.argv[2] || 'AI 자동화로 블로그 발행 파이프라인 만들기';
   designClaude({ title, id: 'cli' }, { title, slug: 'claude-cli-test' })
     .then(c => console.log(JSON.stringify({ by: c?.by, format: c?.format, bytes: c?.meta?.bytes, mock: c?.meta?.mock, engine: c?.meta?.engine }, null, 2)));

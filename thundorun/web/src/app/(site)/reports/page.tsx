@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import Link from 'next/link';
 import { TriangleAlert, ArrowDown } from 'lucide-react';
 import PipelineTree from '@/components/PipelineTree';
+import BoardMeeting from '@/components/BoardMeeting';
 import Empty from '@/components/state/Empty';
 import {
   getLatestReport,
@@ -178,7 +179,7 @@ export default async function ReportsPage({
       {/* ── 페이지 헤더 ── */}
       <div className="page-head">
         <div>
-          <p className="kicker">에이전트 일지 — AI 17마리가 운영하는 블로그 회사</p>
+          <p className="kicker">에이전트 일지 — CEO 1인·팀장 4인이 이끄는 AI 회사</p>
           <h1 className="page-title" style={{ marginTop: 'var(--space-1)' }}>
             {formatDate(report.date)}
           </h1>
@@ -251,6 +252,9 @@ export default async function ReportsPage({
             </span>
           </div>
         )}
+
+        {/* ── 경영회의 — 오늘 회사가 무엇을 정했나(실행 상세보다 먼저 읽혀야 한다) ── */}
+        <BoardMeeting board={summary.board} />
 
         {/* ── 파이프라인 워킹트리 ── */}
         <PipelineTree pipeline={pipeline} agents={report.agents} date={report.date} />

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { isMock, env, paths } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('watchdog/killswitch');
 
 // ─── 로컬 파일 킬스위치 경로 ─────────────────────────────────────────────────
@@ -147,7 +148,7 @@ export function clearLocalKill() {
 }
 
 // CLI
-if (process.argv[1] && process.argv[1].endsWith('killswitch.mjs')) {
+if (isMainModule(import.meta.url)) {
   const cmd = process.argv[2] || 'check';
   if (cmd === 'check') {
     isKilled().then(s => console.log(JSON.stringify(s, null, 2)));

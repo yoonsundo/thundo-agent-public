@@ -48,7 +48,6 @@ flowchart TD
 | **유튜브 쇼츠** | 발행글 1편 → 9:16 영상 | AI 배경 + 켄번스 모션 + TTS 더빙 + 자동 자막 |
 | **호기심 쇼츠** | 독립 채널 "설마 진짜?" | 백로그 → 반전점수 best-pick → 팩트체크 → JIT 제작 |
 | **인스타 카드뉴스** | 하루 2편 | 고전문학 구절로 건네는 위로. **원문 대조** 인용 게이트 |
-| **티스토리 교차발행** | 발행글 미러 | 톤 재작성 후 브라우저 자동 게시 |
 
 <div align="center">
 <table>
@@ -177,7 +176,6 @@ scripts/
 ├── lib/                 # config · log · mock-llm · observed-target
 ├── reddit/              # Reddit RSS + HN Algolia 수집
 ├── seo/                 # GSC 폐루프 · 네이버 순위추적
-├── crosspub/            # 티스토리 교차발행
 ├── shorts/              # 유튜브 쇼츠 (produce.mjs 공용 코어)
 ├── shorts-curiosity/    # 독립 호기심 쇼츠 채널
 ├── cardnews/            # 인스타 카드뉴스 (원문대조 인용게이트)

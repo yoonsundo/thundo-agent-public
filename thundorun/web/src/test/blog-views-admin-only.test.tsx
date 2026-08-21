@@ -61,7 +61,7 @@ describe('공개 변환 — 조회수를 형태에서 제거한다', () => {
 describe('홈 인기블로그 — 조회수 노출', () => {
   it('views 가 없으면 숫자를 그리지 않고 순위·제목은 남는다', () => {
     sessionMock.value = { data: null, status: 'unauthenticated' };
-    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={postsWithoutViews} />);
+    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={postsWithoutViews} videos={[]} agents={[]} />);
 
     // 순위 목록 자체는 유지 — 가려야 하는 건 숫자이지 인기 순서가 아니다.
     expect(screen.getByText('첫 번째 글')).toBeInTheDocument();
@@ -78,7 +78,7 @@ describe('홈 인기블로그 — 조회수 노출', () => {
 
   it('views 가 채워져 있으면 숫자를 그린다(prop 경로)', () => {
     sessionMock.value = { data: { user: { role: 'admin' } }, status: 'authenticated' };
-    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={posts} />);
+    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={posts} videos={[]} agents={[]} />);
     expect(screen.getByText(/12,345\s*회/)).toBeInTheDocument();
   });
 
@@ -89,7 +89,7 @@ describe('홈 인기블로그 — 조회수 노출', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ a: 777 }) });
     vi.stubGlobal('fetch', fetchMock);
 
-    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={postsWithoutViews} />);
+    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={postsWithoutViews} videos={[]} agents={[]} />);
 
     expect(await screen.findByText(/777\s*회/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/popular-views');
@@ -101,7 +101,7 @@ describe('홈 인기블로그 — 조회수 노출', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={postsWithoutViews} />);
+    render(<ProjectsDashboard profile={profile} stats={stats} popularPosts={postsWithoutViews} videos={[]} agents={[]} />);
 
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();

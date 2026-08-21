@@ -18,7 +18,7 @@ const tabs: { id: EditorTab; label: string; icon: typeof Maximize2 }[] = [
 
 export default function TabBar({ activeTab, onTabChange }: TabBarProps) {
   return (
-    <div className="tabs" role="tablist" aria-label="편집 도구">
+    <div className="tabs pb-safe" role="tablist" aria-label="편집 도구">
       {tabs.map(({ id, label, icon: Icon }) => (
         <button
           key={id}

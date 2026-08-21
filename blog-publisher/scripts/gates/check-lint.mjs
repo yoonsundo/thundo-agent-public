@@ -12,6 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+
+import { runGateCli, GateError } from './lib/gate-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 const execFileAsync = promisify(execFile);
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, '../../');
@@ -68,20 +71,14 @@ function stripFrontmatter(text) {
   return m ? m[1] : text;
 }
 
-async function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) {
-    process.stderr.write('Usage: check-lint.mjs <draft.md>\n');
-    process.exit(2);
-  }
+export async function evaluate(draftPath) {
 
   const absPath = resolve(draftPath);
   let raw;
   try {
     raw = readFileSync(absPath, 'utf8');
   } catch (e) {
-    process.stderr.write(`check-lint: 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const bin = findMarkdownlintBin();
@@ -98,8 +95,7 @@ async function main() {
         reason: 'markdownlint-cli2: 오류 없음',
         evidence: { tool: 'markdownlint-cli2', errors: [] },
       };
-      process.stdout.write(JSON.stringify(result) + '\n');
-      process.exit(0);
+      return result;
     } catch (e) {
       // exit 1 = 린트 오류 있음, stdout/stderr에 오류 목록
       const output = (e.stdout || '') + (e.stderr || '');
@@ -112,8 +108,7 @@ async function main() {
         reason: pass ? '오류 없음' : `markdownlint-cli2 오류 ${errors.length}건`,
         evidence: { tool: 'markdownlint-cli2', errors: errors.slice(0, 20) },
       };
-      process.stdout.write(JSON.stringify(result) + '\n');
-      process.exit(pass ? 0 : 1);
+      return result;
     }
   } else {
     // 내장 간이 린트 (graceful fallback)
@@ -129,9 +124,16 @@ async function main() {
         : `내장 린트 오류 ${errors.length}건`,
       evidence: { tool: 'builtin', errors },
     };
-    process.stdout.write(JSON.stringify(result) + '\n');
-    process.exit(pass ? 0 : 1);
+    return result;
   }
 }
 
-main();
+// CLI 로 직접 실행될 때만 돈다. 가드가 없으면 run-all-gates 가 import 하는 순간
+// 이 게이트가 stdout 을 쓰고 process.exit 해 버린다(2026-08-21 실측).
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'lint',
+    evaluate,
+    usage: 'Usage: check-lint.mjs <draft.md>',
+  });
+}

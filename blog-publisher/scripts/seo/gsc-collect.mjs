@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('seo-collect');
 
 const SITE_URL      = process.env.GSC_SITE_URL      || 'sc-domain:thundo.kr';
@@ -228,6 +229,6 @@ async function main() {
 }
 
 // import 될 때는 실행하지 않음 (loadSeoMetrics 공용 헬퍼만 export)
-if (process.argv[1] && process.argv[1].endsWith('gsc-collect.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(1); });
 }

@@ -2,11 +2,11 @@
  * shorts/lib.mjs — 블로그 글 → 유튜브 쇼츠 공용 유틸
  *
  * 경로·설정·인덱스 I/O·벤더 바이너리(ffmpeg)·상태 큐를 한곳에 모은다.
- * crosspub/lib.mjs 의 자매 — published/ 파서·frontmatter 파서는 그쪽을 재사용한다.
+ * published/ 파서·frontmatter 파서는 lib/published-doc.mjs 를 재사용한다.
  *
  * 테스트 격리: STATE_DIR_OVERRIDE, PUBLISHED_DIR_OVERRIDE, SHORTS_CONFIG_OVERRIDE.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'node:fs';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -167,12 +167,5 @@ export function measureMotionScore(file) {
   return body.reduce((a, b) => a + b, 0) / body.length;
 }
 
-/** 심링크 경유 실행에도 견고한 main-module 판별. */
-export function isMainModule(metaUrl) {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
-  } catch {
-    return fileURLToPath(metaUrl) === resolve(process.argv[1]);
-  }
-}
+// 정본은 lib/main-module.mjs 한 곳이다. 기존 소비자를 위해 여기서 재export 한다.
+export { isMainModule } from '../lib/main-module.mjs';

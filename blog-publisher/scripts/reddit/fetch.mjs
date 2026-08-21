@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { isMock, isCollectLive, loadSubreddits, paths, env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('reddit/fetch');
 
 // ─── 경로 헬퍼 ────────────────────────────────────────────────────────────────
@@ -373,7 +374,7 @@ export async function fetchReddit() {
 }
 
 // CLI 직접 실행
-if (process.argv[1] && process.argv[1].endsWith('fetch.mjs')) {
+if (isMainModule(import.meta.url)) {
   fetchReddit().then(posts => {
     console.log(`완료: ${posts.length}개`);
     if (posts.length > 0) {

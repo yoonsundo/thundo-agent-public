@@ -68,6 +68,8 @@ export default function LayerList({
       data-layer-list
       className="row"
       style={{
+        // 짧은 화면에서 세로로 눌려 썸네일이 사라지던 것을 막는다(사후 리뷰 실측: 38.3 → 16px).
+        flex: 'none',
         padding: 'var(--space-2) var(--space-4)',
         overflowX: 'auto',
         background: 'var(--color-surface)',

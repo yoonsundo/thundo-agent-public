@@ -16,6 +16,7 @@ import { sendSlackWebhook } from '../notify/slack-webhook.mjs';
 import { loadNaverSeoConfig } from './naver-search.mjs';
 import { loadNaverRanks } from './naver-rank-collect.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('naver-rank-report');
 
 const REPORT_DIR = process.env.NAVER_REPORT_DIR || 'docs/reports/seo';
@@ -166,6 +167,6 @@ async function main() {
   log.info('완료.');
 }
 
-if (process.argv[1] && process.argv[1].endsWith('naver-rank-report.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(1); });
 }

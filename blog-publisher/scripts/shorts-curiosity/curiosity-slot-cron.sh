@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# curiosity-slot-cron.sh — WSL cron 이 슬롯 시각(10/12/18 KST)마다 호출.
+# curiosity-slot-cron.sh — WSL cron 이 슬롯 시각(10/18 KST)마다 호출 + 21시 결손보충.
 # 호기심 쇼츠 1편(또는 CURIOSITY_SLOT_N)을 produce+upload. 일일 상한(slot.mjs)으로 과다발행 방지.
 # 환경(cron 은 PATH 최소): node 경로·HOME 보장. flock 로 동시실행 차단(중복 발행 방지).
 set -uo pipefail

@@ -22,6 +22,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+
+import { runGateCli, GateError } from './lib/gate-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 // ─── 임계값 ────────────────────────────────────────────────────────────────────
 
 /** 경험 앵커 최소 발동 횟수. 이 미만이면 체크 자체를 건너뜀. */
@@ -126,26 +129,27 @@ function analyze(body) {
 
 // ─── 진입점 ──────────────────────────────────────────────────────────────────
 
-function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) {
-    process.stderr.write('Usage: check-credibility.mjs <draft.md>\n');
-    process.exit(2);
-  }
+export function evaluate(draftPath) {
 
   let raw;
   try {
     raw = readFileSync(resolve(draftPath), 'utf8');
   } catch (e) {
-    process.stderr.write(`check-credibility: 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const body = stripFrontmatter(raw);
   const result = analyze(body);
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(result.pass ? 0 : 1);
+  return result;
 }
 
-main();
+// CLI 로 직접 실행될 때만 돈다. 가드가 없으면 run-all-gates 가 import 하는 순간
+// 이 게이트가 stdout 을 쓰고 process.exit 해 버린다(2026-08-21 실측).
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'credibility',
+    evaluate,
+    usage: 'Usage: check-credibility.mjs <draft.md>',
+  });
+}

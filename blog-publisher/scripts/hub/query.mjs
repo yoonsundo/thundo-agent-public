@@ -21,6 +21,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths, loadBudget } from '../lib/config.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 // ─── 최신 런 로더 ─────────────────────────────────────────────────────────────
 // briefing.mjs 에 의존하지 않고 자체 구현 (병렬 작성 충돌 방지)
 
@@ -284,7 +285,7 @@ export function answerQuery(question) {
 }
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
-if (process.argv[1] && process.argv[1].endsWith('query.mjs')) {
+if (isMainModule(import.meta.url)) {
   const question = process.argv[2];
   if (!question) {
     console.error('사용법: node query.mjs "질문"');

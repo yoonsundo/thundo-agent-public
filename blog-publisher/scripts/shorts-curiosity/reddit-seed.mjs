@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { makeLogger } from '../lib/log.mjs';
 import { paths } from '../lib/config.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('curiosity/reddit-seed');
 
 const UA = process.env.REDDIT_USER_AGENT
@@ -220,9 +221,10 @@ export async function collectSeeds(cfg) {
   return ordered;
 }
 
-export function isMainModule(metaUrl) {
-  return process.argv[1] && metaUrl === `file://${process.argv[1]}`;
-}
+// 정본 재export. 기존 자체 구현은 상대경로·심링크 진입점에서 false 가 됐다.
+// `export { x } from` 는 지역 바인딩을 만들지 않으므로 import 와 재export 를 나눈다
+// (backlog.mjs 가 여기서 isMainModule 을 가져다 쓴다).
+export { isMainModule };
 
 async function main() {
   const { loadConfig } = await import('./lib.mjs');
@@ -230,4 +232,4 @@ async function main() {
   process.stdout.write(JSON.stringify({ ok: true, count: seeds.length, seeds: seeds.slice(0, 40) }, null, 2) + '\n');
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main();
+if (isMainModule(import.meta.url)) main();

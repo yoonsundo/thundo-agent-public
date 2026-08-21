@@ -14,6 +14,7 @@ import { paths, env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 import { mirrorEntryAsync } from './supabase-mirror.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('audit/append');
 
 // ─── 경로 ─────────────────────────────────────────────────────────────────────
@@ -151,7 +152,7 @@ export function appendAudit(opts) {
 }
 
 // CLI
-if (process.argv[1] && process.argv[1].endsWith('append.mjs')) {
+if (isMainModule(import.meta.url)) {
   const action = process.argv[2] || 'publish';
   const entry  = appendAudit({ actor: 'cli-test', action, reason: 'CLI 직접 테스트' });
   console.log('감사 항목 추가:', entry);

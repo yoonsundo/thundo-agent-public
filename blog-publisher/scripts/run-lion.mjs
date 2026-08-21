@@ -25,7 +25,7 @@ import {
 } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath }          from 'node:url';
-import { execFile, execSync }      from 'node:child_process';
+import { execFile, execSync, execFileSync } from 'node:child_process';
 import { promisify }              from 'node:util';
 import { createHash }             from 'node:crypto';
 
@@ -46,6 +46,7 @@ import { designGemini }           from './design/gemini-designer.mjs';
 import { judgeImages, judgeToRunJson } from './design/judge.mjs';
 import { publishFileToDb, isBlogDbEnabled } from './hub/blog-db.mjs';
 import { generateBriefing }        from './hub/briefing.mjs';
+import { assertSafeSlug, isSafeSlug } from './lib/slug.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -352,7 +353,8 @@ async function publishDraft(draft, gateResult, date, image = null) {
   const pubDir = publishedDir();
   if (!existsSync(pubDir)) mkdirSync(pubDir, { recursive: true });
 
-  const slug     = draft.slug || `post-${uid()}`;
+  // draft.slug 는 LLM 출력 → 경로 조립 전 검증(`../` 로 published/ 밖 쓰기 차단).
+  const slug     = assertSafeSlug(draft.slug || `post-${uid()}`, '발행 slug');
   const filename = `${date}-${slug}.md`;
   const filepath = join(pubDir, filename);
 
@@ -417,9 +419,12 @@ async function publishDraft(draft, gateResult, date, image = null) {
   let gitSha = null;
   if (!isMock()) {
     try {
-      execSync(`git add "${filepath}"`, { cwd: ROOT_DIR, stdio: 'pipe' });
-      execSync(
-        `git commit -m "feat(publish): publish ${date} — ${slug}"`,
+      // execFileSync(배열 인자) — 셸 미경유. filepath·slug 는 LLM 출력(draft.slug)에서 오므로
+      // 셸 문자열로 조립하면 `$(...)`·백틱이 그대로 실행된다(따옴표로 감싸도 무력).
+      execFileSync('git', ['add', '--', filepath], { cwd: ROOT_DIR, stdio: 'pipe' });
+      execFileSync(
+        'git',
+        ['commit', '-m', `feat(publish): publish ${date} — ${slug}`],
         { cwd: ROOT_DIR, stdio: 'pipe' }
       );
       gitSha = execSync(
@@ -454,10 +459,58 @@ function addToPublishedIndex(index, topic, draft, pubResult) {
 
 // ─── 런 요약 기록 ─────────────────────────────────────────────────────────────
 
+/**
+ * 폐기 사유를 draftSummary 에 **요약**해 둔다.
+ *
+ * 판정 자체는 이미 `attempts[].gate_gates` / `attempts[].reviews` 에 통째로 들어간다.
+ * 문제는 찾기다 — 발행 0건인 날 run.json 을 열면 `discarded: [id,id,id]` 만 보이고,
+ * 왜 막혔는지 알려면 중첩된 attempts 를 파고들어야 했다. F-17 을 추적할 때 실제로
+ * 여기서 시간을 썼다. 그래서 "무엇이 막았나" 한 줄을 초안 레벨에 올린다.
+ *
+ * 기존 키는 건드리지 않는다(스모크·리포트가 읽는다).
+ */
+function recordDiscardReason(draftSummary, stage, message) {
+  const last = draftSummary.attempts?.[draftSummary.attempts.length - 1] ?? null;
+
+  const blockingGates = (last?.gate_gates ?? [])
+    .filter(g => g && g.pass === false)
+    .map(g => ({ gate: g.gate ?? 'unknown', reason: g.reason ?? '' }));
+
+  const blockingValidators = (last?.reviews ?? [])
+    .filter(r => r && r.verdict !== 'pass')
+    .map(r => ({ validator: r.validator ?? 'unknown', verdict: r.verdict ?? 'unknown',
+                 reason: r.reasons?.[0] ?? '' }));
+
+  draftSummary.discard_reason = {
+    stage,                       // 'slug' | 'gate' | 'validator' | 'publish'
+    message,
+    attempts_used: draftSummary.attempts?.length ?? 0,
+    blocking_gates: blockingGates,
+    blocking_validators: blockingValidators,
+  };
+  return draftSummary.discard_reason;
+}
+
 function saveRunSummary(date, summary) {
   const dir = runDir(date);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const summaryPath = join(dir, 'run.json');
+
+  // 최상위 롤업. `discarded` 는 ID 배열이라 그것만 보면 왜 막혔는지 알 수 없다.
+  // 파생값이므로 drafts 에서 계산한다 — 기록 지점이 늘면 여기가 자동으로 따라온다.
+  summary.discard_summary = (summary.drafts ?? [])
+    .filter(d => d?.discard_reason)
+    .map(d => ({
+      draft_id: d.draft_id,
+      title:    d.title,
+      stage:    d.discard_reason.stage,
+      blocked_by: [
+        ...d.discard_reason.blocking_gates.map(g => `gate:${g.gate}`),
+        ...d.discard_reason.blocking_validators.map(v => `validator:${v.validator}`),
+      ],
+      message: d.discard_reason.message,
+    }));
+
   try {
     writeFileSync(summaryPath, JSON.stringify(summary, null, 2), 'utf8');
     log.info(`런 요약 기록: ${summaryPath}`);
@@ -465,6 +518,405 @@ function saveRunSummary(date, summary) {
     log.error('런 요약 저장 실패', err);
   }
 }
+/**
+ * STEP 3 — 작가 배정 → 초안 생성 → 파일 기록(병렬).
+ *
+ * 예산 캡에 걸리면 이미 만든 초안을 전부 폐기로 기록하고 `{ ok: false }` 를 돌려준다.
+ * (부분 진행분을 남겨두면 다음 런이 그걸 발행 후보로 오해한다.)
+ *
+ * @param {object[]} selectedTopics
+ * @param {object} summary
+ * @param {string} date
+ * @returns {Promise<{ok:boolean, draftPairs?:object[]}>}
+ */
+async function buildDrafts(selectedTopics, summary, date) {
+  log.info('STEP 3: 작가 배정 + 초안 생성 (병렬)');
+
+  const draftPairs = await Promise.all(
+    selectedTopics.map(async (topic, i) => {
+      const writer    = assignWriter(i);
+      const outline   = makeOutline(topic, writer);
+      const draft     = mockDraft(topic, outline, writer);
+      const draftPath = saveDraft(draft, date);
+      log.info(`[${writer}] "${draft.title.slice(0, 45)}…" → ${draftPath}`);
+      return { topic, draft, draftPath, writer };
+    })
+  );
+
+  const chargeStep3 = charge(6000, selectedTopics.length, 'step3-drafts');
+  if (chargeStep3.over_cap) {
+    log.warn(`[abort] 예산 캡 도달 — step3 직후 중단 (tokens=${chargeStep3.tokens_used}/${chargeStep3.caps.tokens} calls=${chargeStep3.calls_used}/${chargeStep3.caps.calls})`);
+    await notify(EVENTS.BUDGET_PREEMPT, {
+      tokens_used: chargeStep3.tokens_used,
+      calls_used:  chargeStep3.calls_used,
+      stage: 'step3-drafts',
+      partial_drafts: draftPairs.length,
+    });
+    appendAudit({ actor: 'lion', action: ACTIONS.BUDGET_STOP, reason: 'budget_preempt: step3-drafts' });
+    summary.errors.push('budget_preempt');
+    summary.status = 'budget_preempt';
+    // 부분 진행된 초안들을 discarded로 기록
+    for (const { draft, topic } of draftPairs) {
+      summary.drafts.push({ draft_id: draft.id, title: draft.title, writer: draft.writer,
+        slug: draft.slug, attempts: [], outcome: 'discarded_budget', published_file: null });
+      summary.discarded.push(draft.id);
+      appendTopicHistorySync(topic, 'discarded');
+    }
+    return;
+  }
+  log.info(`초안 ${draftPairs.length}개 생성 완료`);
+  return { ok: true, draftPairs };
+}
+
+/**
+ * STEP 7 — 런 결과 판정(발행0 여부) → 감사로그 → 알림.
+ * main 에서 뽑아냈다(F-01). 여기서 정하는 `summary.status` 가 대시보드·브리핑의 기준이 된다.
+ * @param {object} summary
+ * @param {string} date
+ */
+async function announceOutcome(summary, date) {
+  log.info('\nSTEP 7: 최종 감사로그 + 알림');
+  const publishedCount = summary.published.length;
+  const discardedCount = summary.discarded.length;
+
+  if (publishedCount === 0) {
+    log.warn(`[발행0] 모든 초안(${discardedCount}건)이 게이트/검증 실패로 폐기됨 — 발행 0건`);
+    summary.status = 'zero_published';
+  } else {
+    summary.status = 'success';
+  }
+
+  appendAudit({
+    actor:  'lion',
+    action: ACTIONS.PUBLISH,
+    reason: `런 완료 — 발행:${publishedCount} 폐기:${discardedCount} status:${summary.status}`,
+  });
+
+  if (publishedCount === 0) {
+    // 발행0 전용 경고 알림
+    await notify(EVENTS.PARTIAL, {
+      details:        `[발행0] 모든 초안 폐기 — 발행:0 폐기:${discardedCount}`,
+      published:      [],
+      discarded:      summary.discarded,
+      zero_published: true,
+      date,
+    });
+  } else {
+    await notify(EVENTS.SUCCESS, {
+      details:   `발행:${publishedCount} 폐기:${discardedCount}`,
+      published: summary.published,
+      date,
+    });
+  }
+}
+
+/**
+ * STEP 8~9 — 런 요약 기록 → lock 해제 → CEO 브리핑 적재.
+ * `finally` 안에서 돌던 블록이다. 예외로 중단돼도 요약과 lock 해제는 반드시 일어나야 하므로
+ * 호출부는 여전히 `finally` 에서 부른다 — 위치만 옮겼지 보장은 그대로다.
+ * @param {object} summary
+ * @param {string} date
+ * @param {number} runStart
+ */
+async function finalizeRun(summary, date, runStart) {
+  summary.finished_at = new Date().toISOString();
+  summary.elapsed_ms  = Date.now() - runStart;
+  saveRunSummary(date, summary);
+
+  log.info('\nSTEP 8: lock 해제');
+  releaseLock(date);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // STEP 9: CEO 브리핑 생성 → Supabase hub_briefings 적재
+  //   대시보드(web/) 개요·타임라인 패널이 이 레코드를 읽는다.
+  //   blog_posts 적재와 동일 게이팅(isBlogDbEnabled) — mock 로컬 런이 prod 오염 안 하게. 비차단.
+  // ─────────────────────────────────────────────────────────────────────
+  if (isBlogDbEnabled()) {
+    try {
+      const briefing = await generateBriefing();
+      log.info(`STEP 9: CEO 브리핑 적재 (briefing_id=${briefing?.id ?? '-'})`);
+    } catch (e) {
+      log.warn(`STEP 9: CEO 브리핑 적재 실패(무시): ${e.message}`);
+    }
+  }
+}
+
+/**
+ * STEP 1 — 수집(cheetah/owl/magpie 병렬) 후 후보 주제 목록을 만든다.
+ *
+ * 예산 캡에 걸리면 `{ ok: false }` 를 돌려준다 — main 안에 있을 때는 `return` 한 줄로
+ * 런을 끝냈지만, 함수로 뽑히면 그 신호를 값으로 넘겨야 한다(호출부가 판단한다).
+ *
+ * @param {object} summary 런 요약(예산 중단 시 status·errors 를 여기 기록한다)
+ * @returns {Promise<{ok:boolean, allTopics?:object[]}>}
+ */
+async function collectCandidates(summary) {
+  log.info('STEP 1: 수집 (cheetah/owl/magpie 병렬)');
+
+  const [cheetahTopics, owlTopics, [redditPosts, hnItems]] = await Promise.all([
+    Promise.resolve(mockResearch('trend')),
+    Promise.resolve(mockResearch('depth')),
+    // Reddit RSS + HN 순차 수집 (Reddit 간격 필요로 순차, HN은 이후)
+    fetchReddit().then(async posts => {
+      const hn = await fetchHN();
+      return [posts, hn];
+    }),
+  ]);
+
+  const magpieRedditTopics = normalizePosts(redditPosts, 10);
+  const magpieHnTopics     = normalizeHnItems(hnItems, 10);
+  const magpieTopics       = [...magpieRedditTopics, ...magpieHnTopics];
+
+  const chargeStep1 = charge(3000, 3, 'step1-collect');
+  if (chargeStep1.over_cap) {
+    log.warn(`[abort] 예산 캡 도달 — step1 직후 중단 (tokens=${chargeStep1.tokens_used}/${chargeStep1.caps.tokens} calls=${chargeStep1.calls_used}/${chargeStep1.caps.calls})`);
+    await notify(EVENTS.BUDGET_PREEMPT, {
+      tokens_used: chargeStep1.tokens_used,
+      calls_used:  chargeStep1.calls_used,
+      stage: 'step1-collect',
+    });
+    appendAudit({ actor: 'lion', action: ACTIONS.BUDGET_STOP, reason: 'budget_preempt: step1-collect' });
+    summary.errors.push('budget_preempt');
+    summary.status = 'budget_preempt';
+    return;
+  }
+
+  const magpieCount = magpieTopics.length;
+  log.info(`수집 완료 — cheetah:${cheetahTopics.length} owl:${owlTopics.length} magpie:${magpieCount} (reddit:${magpieRedditTopics.length} hn:${magpieHnTopics.length})`);
+
+  if (magpieCount === 0) {
+    log.warn('magpie(Reddit+HN) 결과 없음 — cheetah/owl 결과만으로 계속');
+  }
+
+  const allTopics = [...cheetahTopics, ...owlTopics, ...magpieTopics];
+  log.info(`전체 후보: ${allTopics.length}개`);
+  return { ok: true, allTopics };
+}
+
+/**
+ * 초안 1편의 STEP 4~6 — 게이트 → 검증자 → 발행/재시도/폐기.
+ *
+ * main() 에서 뽑아낸 것이다(F-01). 이 블록이 main 의 210줄과 중첩 4단계를 차지하고 있었다.
+ * 초안끼리는 서로 영향이 없으므로(편별 루프) 통째로 함수 하나가 된다.
+ *
+ * @param {object} pair  {topic, draft, draftPath, writer}
+ * @param {object} ctx   런 전체가 공유하는 것 — summary·재시도 상한·날짜
+ * @param {object} ctx.summary     런 요약(여기에 결과를 push 한다)
+ * @param {number} ctx.retryLimit
+ * @param {string} ctx.date
+ * @param {object} ctx.publishedIndex 발행 인덱스(발행 성공 시 갱신·저장)
+ */
+async function processDraft(pair, { summary, retryLimit, date, publishedIndex }) {
+  const { topic, draft, draftPath, writer } = pair;
+  log.info(`\n--- 초안: "${draft.title.slice(0, 50)}" [${writer}] ---`);
+
+
+  // slug 형식은 게이트·검증자 **앞에서** 본다(2026-08-19 리뷰 F4). 발행 직전에만 검사하면
+  // 같은 초안이 재시도 횟수만큼 게이트·검증자 5명을 다시 돌고 나서야 폐기된다 — LLM 호출 낭비.
+  // 여기서 걸러도 다른 초안 처리에는 영향이 없다(편별 루프).
+  if (draft.slug && !isSafeSlug(draft.slug)) {
+    log.warn(`[skip] slug 형식 위반 — 경로 이탈 차단, 이 초안 폐기: ${String(draft.slug).slice(0, 60)}`);
+    const slugSummary = { draft_id: draft.id, title: draft.title, writer,
+      slug: draft.slug, attempts: [], outcome: 'discarded_slug', published_file: null };
+    recordDiscardReason(slugSummary, 'slug',
+      `slug 형식 위반: ${String(draft.slug).slice(0, 60)}`);
+    summary.drafts.push(slugSummary);
+    summary.discarded.push(draft.id);   // 기존 항목과 동일하게 draft.id 문자열로
+    appendTopicHistorySync(topic, 'discarded');
+    return;   // 이 초안은 여기서 끝 — 함수로 뽑히기 전엔 for 루프의 continue 였다
+  }
+
+  let attempt      = 0;
+  let finalOutcome = null; // 'published' | 'discarded'
+
+  const draftSummary = {
+    draft_id:       draft.id,
+    title:          draft.title,
+    writer,
+    slug:           draft.slug,
+    attempts:       [],
+    outcome:        null,
+    published_file: null,
+  };
+
+  while (attempt <= retryLimit && finalOutcome === null) {
+    log.info(`[attempt ${attempt}]`);
+
+    // ── STEP 4: 결정론 게이트 (LLM 앞) ──────────────────────────────
+    log.info('[step4] 게이트 실행');
+    const gateResult = await runGates(draftPath);
+    charge(0, 1, `step4-gate-a${attempt}`);
+
+    log.info(`[step4] 결과: ${gateResult.all_pass ? 'PASS' : 'FAIL'}`);
+    (gateResult.gates || []).forEach(g =>
+      log.info(`  [${g.gate || 'unknown'}] ${g.pass ? 'PASS' : 'FAIL'} ${g.reason || ''}`)
+    );
+
+    const attemptRec = {
+      attempt,
+      gate_pass:   gateResult.all_pass,
+      gate_gates:  gateResult.gates,
+      reviews:     null,
+      publishable: false,
+    };
+
+    if (!gateResult.all_pass) {
+      // hard_fail → LLM 스킵, retry 또는 폐기
+      log.info('[step4] FAIL → LLM 스킵 (예산 절약)');
+      attemptRec.skip_reason = 'gate_fail';
+      draftSummary.attempts.push(attemptRec);
+
+      if (attempt < retryLimit) {
+        appendAudit({ actor: 'lion', action: ACTIONS.RETRY,
+          reason: `게이트 FAIL attempt=${attempt}`, after_hash: draft.id });
+        attempt++;
+        continue;
+      } else {
+        log.info('[폐기] 게이트 FAIL 최대재시도 초과');
+        appendAudit({ actor: 'lion', action: ACTIONS.DISCARD,
+          reason: '게이트 FAIL 최대재시도 초과', after_hash: draft.id });
+        await notify(EVENTS.DISCARD_MAXRETRY,
+          { draft_id: draft.id, title: draft.title, reason: 'gate_fail_max_retry' });
+        finalOutcome = 'discarded';
+        draftSummary.outcome = 'discarded';
+        const gr = recordDiscardReason(draftSummary, 'gate', '게이트 FAIL 최대재시도 초과');
+        log.warn(`[폐기사유] ${gr.blocking_gates.map(g => `${g.gate}(${g.reason})`).join(' / ') || '기록 없음'}`);
+        appendTopicHistorySync(topic, 'discarded');
+        break;
+      }
+    }
+
+    // ── STEP 5: 검증자 4명 병렬 ──────────────────────────────────────
+    log.info('[step5] 검증자 병렬 실행 (eagle/bee/swan/raven)');
+    const reviews    = await runValidators(draft);
+    charge(4000, 4, `step5-reviews-a${attempt}`);
+
+    const all4pass    = reviews.every(r => r.verdict === 'pass');
+    const publishable = gateResult.all_pass && all4pass;
+
+    reviews.forEach(r =>
+      log.info(`  [${r.validator}] ${r.verdict} — ${r.reasons?.[0] || ''}`)
+    );
+    log.info(`[step5] publishable=${publishable} (gate=true, all4=${all4pass})`);
+
+    attemptRec.reviews     = reviews;
+    attemptRec.publishable = publishable;
+    draftSummary.attempts.push(attemptRec);
+
+    // ── STEP 6: 발행 / 재시도 / 폐기 ────────────────────────────────
+    if (publishable) {
+      log.info('[step6] 발행');
+      // STEP 5.5: 이미지 디자이너 듀얼 (비차단 — 실패해도 발행 진행)
+      let imageMeta = null;
+      try {
+        imageMeta = await runImageStage(draft, topic);
+      } catch (e) {
+        log.warn(`[step5.5] 이미지 단계 실패(무시): ${e.message}`);
+      }
+      try {
+        const pubResult = await publishDraft(draft, gateResult, date, imageMeta);
+
+        // verify (mock: 즉시 ok)
+        const deployResult = await waitDeploy(null, { slug: draft.slug });
+        log.info(`[step6] verify: ok=${deployResult.ok} skipped=${deployResult.skipped}`);
+
+        // 인덱스 갱신
+        addToPublishedIndex(publishedIndex, topic, draft, pubResult);
+        savePublishedIndex(publishedIndex);
+
+        appendAudit({
+          actor:      'lion',
+          action:     ACTIONS.PUBLISH,
+          after_hash: pubResult.git_sha || sha256hex(draft.id).slice(0, 16),
+          reason:     `발행 성공: ${pubResult.filename}`,
+        });
+        await notify(EVENTS.SUCCESS, {
+          url:     pubResult.filepath,
+          sha:     pubResult.git_sha,
+          status:  200,
+          details: draft.title,
+        });
+
+        // 발행 성공 — 비당선 후보 자산 정리(승자만 사이트로). 실패해도 발행엔 무영향.
+        if (imageMeta && Array.isArray(imageMeta.asset_paths)) {
+          for (const ap of imageMeta.asset_paths) {
+            if (ap && ap !== imageMeta.winner_path) {
+              try { if (existsSync(ap)) unlinkSync(ap); } catch { /* 무시 */ }
+            }
+          }
+        }
+
+        // 홈페이지 DB(blog_posts) 적재 — 비차단(이미지 단계와 동일). 실패해도 파일 발행 불변.
+        let dbResult = null;
+        try {
+          dbResult = await publishFileToDb(pubResult.filepath);
+          log.info(`[step6] blog_posts 적재: ok=${dbResult.ok} mode=${dbResult.mode || '-'} slug=${dbResult.slug || '-'}`);
+        } catch (e) {
+          log.warn(`[step6] blog_posts 적재 실패(무시): ${e.message}`);
+        }
+
+        finalOutcome = 'published';
+        draftSummary.outcome       = 'published';
+        draftSummary.published_file = pubResult.filepath;
+        draftSummary.image         = imageMeta ? imageMeta.run_record : null;
+        draftSummary.db_published  = dbResult ? { ok: dbResult.ok, slug: dbResult.slug } : null;
+        appendTopicHistorySync(topic, 'published');
+        summary.published.push(pubResult.filename);
+
+      } catch (err) {
+        log.error(`[step6] 발행 오류: ${err.message}`);
+        summary.errors.push(`publish_error: ${err.message}`);
+        // 고아 자산 정리: 발행 실패 시 이미지 단계가 기록한 후보 파일 삭제
+        if (imageMeta && Array.isArray(imageMeta.asset_paths)) {
+          for (const ap of imageMeta.asset_paths) {
+            try { if (ap && existsSync(ap)) unlinkSync(ap); } catch { /* 무시 */ }
+          }
+        }
+        if (attempt < retryLimit) {
+          attempt++;
+          appendAudit({ actor: 'lion', action: ACTIONS.RETRY,
+            reason: `발행 오류 attempt=${attempt - 1}` });
+          continue;
+        } else {
+          finalOutcome = 'discarded';
+          draftSummary.outcome = 'discarded';
+          recordDiscardReason(draftSummary, 'publish', `발행 오류 최대재시도: ${err.message}`);
+          appendAudit({ actor: 'lion', action: ACTIONS.DISCARD,
+            reason: `발행 오류 최대재시도: ${err.message}` });
+          await notify(EVENTS.PUBLISH_FAIL,
+            { reason: err.message, draft_id: draft.id });
+        }
+      }
+
+    } else {
+      // 검증 미통과
+      if (attempt < retryLimit) {
+        log.info(`[step6] 검증 미통과 → retry ${attempt + 1}/${retryLimit}`);
+        appendAudit({ actor: 'lion', action: ACTIONS.RETRY,
+          reason: `검증 미통과 attempt=${attempt}` });
+        attempt++;
+        continue;
+      } else {
+        log.info('[step6] 검증 미통과 최대재시도 초과 → 폐기');
+        appendAudit({ actor: 'lion', action: ACTIONS.DISCARD,
+          reason: '검증 미통과 최대재시도 초과', after_hash: draft.id });
+        await notify(EVENTS.DISCARD_MAXRETRY,
+          { draft_id: draft.id, title: draft.title, reason: 'review_fail_max_retry' });
+        finalOutcome = 'discarded';
+        draftSummary.outcome = 'discarded';
+        const vr = recordDiscardReason(draftSummary, 'validator', '검증 미통과 최대재시도 초과');
+        log.warn(`[폐기사유] ${vr.blocking_validators.map(v => `${v.validator}(${v.reason})`).join(' / ') || '기록 없음'}`);
+        appendTopicHistorySync(topic, 'discarded');
+      }
+    }
+  } // while
+
+  summary.drafts.push(draftSummary);
+  if (draftSummary.outcome === 'discarded') {
+    summary.discarded.push(draft.id);
+  }
+}
+
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 
@@ -541,45 +993,9 @@ async function main() {
     // ─────────────────────────────────────────────────────────────────────
     // STEP 1: 수집 — cheetah/owl/magpie 병렬
     // ─────────────────────────────────────────────────────────────────────
-    log.info('STEP 1: 수집 (cheetah/owl/magpie 병렬)');
-
-    const [cheetahTopics, owlTopics, [redditPosts, hnItems]] = await Promise.all([
-      Promise.resolve(mockResearch('trend')),
-      Promise.resolve(mockResearch('depth')),
-      // Reddit RSS + HN 순차 수집 (Reddit 간격 필요로 순차, HN은 이후)
-      fetchReddit().then(async posts => {
-        const hn = await fetchHN();
-        return [posts, hn];
-      }),
-    ]);
-
-    const magpieRedditTopics = normalizePosts(redditPosts, 10);
-    const magpieHnTopics     = normalizeHnItems(hnItems, 10);
-    const magpieTopics       = [...magpieRedditTopics, ...magpieHnTopics];
-
-    const chargeStep1 = charge(3000, 3, 'step1-collect');
-    if (chargeStep1.over_cap) {
-      log.warn(`[abort] 예산 캡 도달 — step1 직후 중단 (tokens=${chargeStep1.tokens_used}/${chargeStep1.caps.tokens} calls=${chargeStep1.calls_used}/${chargeStep1.caps.calls})`);
-      await notify(EVENTS.BUDGET_PREEMPT, {
-        tokens_used: chargeStep1.tokens_used,
-        calls_used:  chargeStep1.calls_used,
-        stage: 'step1-collect',
-      });
-      appendAudit({ actor: 'lion', action: ACTIONS.BUDGET_STOP, reason: 'budget_preempt: step1-collect' });
-      summary.errors.push('budget_preempt');
-      summary.status = 'budget_preempt';
-      return;
-    }
-
-    const magpieCount = magpieTopics.length;
-    log.info(`수집 완료 — cheetah:${cheetahTopics.length} owl:${owlTopics.length} magpie:${magpieCount} (reddit:${magpieRedditTopics.length} hn:${magpieHnTopics.length})`);
-
-    if (magpieCount === 0) {
-      log.warn('magpie(Reddit+HN) 결과 없음 — cheetah/owl 결과만으로 계속');
-    }
-
-    const allTopics = [...cheetahTopics, ...owlTopics, ...magpieTopics];
-    log.info(`전체 후보: ${allTopics.length}개`);
+    const collected = await collectCandidates(summary);
+    if (!collected.ok) return;
+    const allTopics = collected.allTopics;
 
     // ─────────────────────────────────────────────────────────────────────
     // STEP 2: 주제 3 선정 (dedup_key 중복 회피 + seed backfill)
@@ -644,41 +1060,9 @@ async function main() {
     // ─────────────────────────────────────────────────────────────────────
     // STEP 3: 작가 배정 + 초안 생성 + 파일 기록 (병렬)
     // ─────────────────────────────────────────────────────────────────────
-    log.info('STEP 3: 작가 배정 + 초안 생성 (병렬)');
-
-    const draftPairs = await Promise.all(
-      selectedTopics.map(async (topic, i) => {
-        const writer    = assignWriter(i);
-        const outline   = makeOutline(topic, writer);
-        const draft     = mockDraft(topic, outline, writer);
-        const draftPath = saveDraft(draft, date);
-        log.info(`[${writer}] "${draft.title.slice(0, 45)}…" → ${draftPath}`);
-        return { topic, draft, draftPath, writer };
-      })
-    );
-
-    const chargeStep3 = charge(6000, selectedTopics.length, 'step3-drafts');
-    if (chargeStep3.over_cap) {
-      log.warn(`[abort] 예산 캡 도달 — step3 직후 중단 (tokens=${chargeStep3.tokens_used}/${chargeStep3.caps.tokens} calls=${chargeStep3.calls_used}/${chargeStep3.caps.calls})`);
-      await notify(EVENTS.BUDGET_PREEMPT, {
-        tokens_used: chargeStep3.tokens_used,
-        calls_used:  chargeStep3.calls_used,
-        stage: 'step3-drafts',
-        partial_drafts: draftPairs.length,
-      });
-      appendAudit({ actor: 'lion', action: ACTIONS.BUDGET_STOP, reason: 'budget_preempt: step3-drafts' });
-      summary.errors.push('budget_preempt');
-      summary.status = 'budget_preempt';
-      // 부분 진행된 초안들을 discarded로 기록
-      for (const { draft, topic } of draftPairs) {
-        summary.drafts.push({ draft_id: draft.id, title: draft.title, writer: draft.writer,
-          slug: draft.slug, attempts: [], outcome: 'discarded_budget', published_file: null });
-        summary.discarded.push(draft.id);
-        appendTopicHistorySync(topic, 'discarded');
-      }
-      return;
-    }
-    log.info(`초안 ${draftPairs.length}개 생성 완료`);
+    const drafted = await buildDrafts(selectedTopics, summary, date);
+    if (!drafted.ok) return;
+    const draftPairs = drafted.draftPairs;
 
     // ─────────────────────────────────────────────────────────────────────
     // STEP 4→5→6: 각 초안 게이트 → 검증 → 발행/재시도/폐기
@@ -687,256 +1071,19 @@ async function main() {
     const retryLimit = pipeline.retry_limit ?? 2;
 
     for (const pair of draftPairs) {
-      const { topic, draft, draftPath, writer } = pair;
-      log.info(`\n--- 초안: "${draft.title.slice(0, 50)}" [${writer}] ---`);
-
-      let attempt      = 0;
-      let finalOutcome = null; // 'published' | 'discarded'
-
-      const draftSummary = {
-        draft_id:       draft.id,
-        title:          draft.title,
-        writer,
-        slug:           draft.slug,
-        attempts:       [],
-        outcome:        null,
-        published_file: null,
-      };
-
-      while (attempt <= retryLimit && finalOutcome === null) {
-        log.info(`[attempt ${attempt}]`);
-
-        // ── STEP 4: 결정론 게이트 (LLM 앞) ──────────────────────────────
-        log.info('[step4] 게이트 실행');
-        const gateResult = await runGates(draftPath);
-        charge(0, 1, `step4-gate-a${attempt}`);
-
-        log.info(`[step4] 결과: ${gateResult.all_pass ? 'PASS' : 'FAIL'}`);
-        (gateResult.gates || []).forEach(g =>
-          log.info(`  [${g.gate || 'unknown'}] ${g.pass ? 'PASS' : 'FAIL'} ${g.reason || ''}`)
-        );
-
-        const attemptRec = {
-          attempt,
-          gate_pass:   gateResult.all_pass,
-          gate_gates:  gateResult.gates,
-          reviews:     null,
-          publishable: false,
-        };
-
-        if (!gateResult.all_pass) {
-          // hard_fail → LLM 스킵, retry 또는 폐기
-          log.info('[step4] FAIL → LLM 스킵 (예산 절약)');
-          attemptRec.skip_reason = 'gate_fail';
-          draftSummary.attempts.push(attemptRec);
-
-          if (attempt < retryLimit) {
-            appendAudit({ actor: 'lion', action: ACTIONS.RETRY,
-              reason: `게이트 FAIL attempt=${attempt}`, after_hash: draft.id });
-            attempt++;
-            continue;
-          } else {
-            log.info('[폐기] 게이트 FAIL 최대재시도 초과');
-            appendAudit({ actor: 'lion', action: ACTIONS.DISCARD,
-              reason: '게이트 FAIL 최대재시도 초과', after_hash: draft.id });
-            await notify(EVENTS.DISCARD_MAXRETRY,
-              { draft_id: draft.id, title: draft.title, reason: 'gate_fail_max_retry' });
-            finalOutcome = 'discarded';
-            draftSummary.outcome = 'discarded';
-            appendTopicHistorySync(topic, 'discarded');
-            break;
-          }
-        }
-
-        // ── STEP 5: 검증자 4명 병렬 ──────────────────────────────────────
-        log.info('[step5] 검증자 병렬 실행 (eagle/bee/swan/raven)');
-        const reviews    = await runValidators(draft);
-        charge(4000, 4, `step5-reviews-a${attempt}`);
-
-        const all4pass    = reviews.every(r => r.verdict === 'pass');
-        const publishable = gateResult.all_pass && all4pass;
-
-        reviews.forEach(r =>
-          log.info(`  [${r.validator}] ${r.verdict} — ${r.reasons?.[0] || ''}`)
-        );
-        log.info(`[step5] publishable=${publishable} (gate=true, all4=${all4pass})`);
-
-        attemptRec.reviews     = reviews;
-        attemptRec.publishable = publishable;
-        draftSummary.attempts.push(attemptRec);
-
-        // ── STEP 6: 발행 / 재시도 / 폐기 ────────────────────────────────
-        if (publishable) {
-          log.info('[step6] 발행');
-          // STEP 5.5: 이미지 디자이너 듀얼 (비차단 — 실패해도 발행 진행)
-          let imageMeta = null;
-          try {
-            imageMeta = await runImageStage(draft, topic);
-          } catch (e) {
-            log.warn(`[step5.5] 이미지 단계 실패(무시): ${e.message}`);
-          }
-          try {
-            const pubResult = await publishDraft(draft, gateResult, date, imageMeta);
-
-            // verify (mock: 즉시 ok)
-            const deployResult = await waitDeploy(null, { slug: draft.slug });
-            log.info(`[step6] verify: ok=${deployResult.ok} skipped=${deployResult.skipped}`);
-
-            // 인덱스 갱신
-            addToPublishedIndex(publishedIndex, topic, draft, pubResult);
-            savePublishedIndex(publishedIndex);
-
-            appendAudit({
-              actor:      'lion',
-              action:     ACTIONS.PUBLISH,
-              after_hash: pubResult.git_sha || sha256hex(draft.id).slice(0, 16),
-              reason:     `발행 성공: ${pubResult.filename}`,
-            });
-            await notify(EVENTS.SUCCESS, {
-              url:     pubResult.filepath,
-              sha:     pubResult.git_sha,
-              status:  200,
-              details: draft.title,
-            });
-
-            // 발행 성공 — 비당선 후보 자산 정리(승자만 사이트로). 실패해도 발행엔 무영향.
-            if (imageMeta && Array.isArray(imageMeta.asset_paths)) {
-              for (const ap of imageMeta.asset_paths) {
-                if (ap && ap !== imageMeta.winner_path) {
-                  try { if (existsSync(ap)) unlinkSync(ap); } catch { /* 무시 */ }
-                }
-              }
-            }
-
-            // 홈페이지 DB(blog_posts) 적재 — 비차단(이미지 단계와 동일). 실패해도 파일 발행 불변.
-            let dbResult = null;
-            try {
-              dbResult = await publishFileToDb(pubResult.filepath);
-              log.info(`[step6] blog_posts 적재: ok=${dbResult.ok} mode=${dbResult.mode || '-'} slug=${dbResult.slug || '-'}`);
-            } catch (e) {
-              log.warn(`[step6] blog_posts 적재 실패(무시): ${e.message}`);
-            }
-
-            finalOutcome = 'published';
-            draftSummary.outcome       = 'published';
-            draftSummary.published_file = pubResult.filepath;
-            draftSummary.image         = imageMeta ? imageMeta.run_record : null;
-            draftSummary.db_published  = dbResult ? { ok: dbResult.ok, slug: dbResult.slug } : null;
-            appendTopicHistorySync(topic, 'published');
-            summary.published.push(pubResult.filename);
-
-          } catch (err) {
-            log.error(`[step6] 발행 오류: ${err.message}`);
-            summary.errors.push(`publish_error: ${err.message}`);
-            // 고아 자산 정리: 발행 실패 시 이미지 단계가 기록한 후보 파일 삭제
-            if (imageMeta && Array.isArray(imageMeta.asset_paths)) {
-              for (const ap of imageMeta.asset_paths) {
-                try { if (ap && existsSync(ap)) unlinkSync(ap); } catch { /* 무시 */ }
-              }
-            }
-            if (attempt < retryLimit) {
-              attempt++;
-              appendAudit({ actor: 'lion', action: ACTIONS.RETRY,
-                reason: `발행 오류 attempt=${attempt - 1}` });
-              continue;
-            } else {
-              finalOutcome = 'discarded';
-              draftSummary.outcome = 'discarded';
-              appendAudit({ actor: 'lion', action: ACTIONS.DISCARD,
-                reason: `발행 오류 최대재시도: ${err.message}` });
-              await notify(EVENTS.PUBLISH_FAIL,
-                { reason: err.message, draft_id: draft.id });
-            }
-          }
-
-        } else {
-          // 검증 미통과
-          if (attempt < retryLimit) {
-            log.info(`[step6] 검증 미통과 → retry ${attempt + 1}/${retryLimit}`);
-            appendAudit({ actor: 'lion', action: ACTIONS.RETRY,
-              reason: `검증 미통과 attempt=${attempt}` });
-            attempt++;
-            continue;
-          } else {
-            log.info('[step6] 검증 미통과 최대재시도 초과 → 폐기');
-            appendAudit({ actor: 'lion', action: ACTIONS.DISCARD,
-              reason: '검증 미통과 최대재시도 초과', after_hash: draft.id });
-            await notify(EVENTS.DISCARD_MAXRETRY,
-              { draft_id: draft.id, title: draft.title, reason: 'review_fail_max_retry' });
-            finalOutcome = 'discarded';
-            draftSummary.outcome = 'discarded';
-            appendTopicHistorySync(topic, 'discarded');
-          }
-        }
-      } // while
-
-      summary.drafts.push(draftSummary);
-      if (draftSummary.outcome === 'discarded') {
-        summary.discarded.push(draft.id);
-      }
-    } // for
+      await processDraft(pair, { summary, retryLimit, date, publishedIndex });
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // STEP 7: 최종 감사로그 + 알림
     // ─────────────────────────────────────────────────────────────────────
-    log.info('\nSTEP 7: 최종 감사로그 + 알림');
-    const publishedCount = summary.published.length;
-    const discardedCount = summary.discarded.length;
-
-    if (publishedCount === 0) {
-      log.warn(`[발행0] 모든 초안(${discardedCount}건)이 게이트/검증 실패로 폐기됨 — 발행 0건`);
-      summary.status = 'zero_published';
-    } else {
-      summary.status = 'success';
-    }
-
-    appendAudit({
-      actor:  'lion',
-      action: ACTIONS.PUBLISH,
-      reason: `런 완료 — 발행:${publishedCount} 폐기:${discardedCount} status:${summary.status}`,
-    });
-
-    if (publishedCount === 0) {
-      // 발행0 전용 경고 알림
-      await notify(EVENTS.PARTIAL, {
-        details:        `[발행0] 모든 초안 폐기 — 발행:0 폐기:${discardedCount}`,
-        published:      [],
-        discarded:      summary.discarded,
-        zero_published: true,
-        date,
-      });
-    } else {
-      await notify(EVENTS.SUCCESS, {
-        details:   `발행:${publishedCount} 폐기:${discardedCount}`,
-        published: summary.published,
-        date,
-      });
-    }
+    await announceOutcome(summary, date);
 
   } finally {
     // ─────────────────────────────────────────────────────────────────────
     // STEP 8: 런 요약 기록 + lock 해제
     // ─────────────────────────────────────────────────────────────────────
-    summary.finished_at = new Date().toISOString();
-    summary.elapsed_ms  = Date.now() - runStart;
-    saveRunSummary(date, summary);
-
-    log.info('\nSTEP 8: lock 해제');
-    releaseLock(date);
-
-    // ─────────────────────────────────────────────────────────────────────
-    // STEP 9: CEO 브리핑 생성 → Supabase hub_briefings 적재
-    //   대시보드(web/) 개요·타임라인 패널이 이 레코드를 읽는다.
-    //   blog_posts 적재와 동일 게이팅(isBlogDbEnabled) — mock 로컬 런이 prod 오염 안 하게. 비차단.
-    // ─────────────────────────────────────────────────────────────────────
-    if (isBlogDbEnabled()) {
-      try {
-        const briefing = await generateBriefing();
-        log.info(`STEP 9: CEO 브리핑 적재 (briefing_id=${briefing?.id ?? '-'})`);
-      } catch (e) {
-        log.warn(`STEP 9: CEO 브리핑 적재 실패(무시): ${e.message}`);
-      }
-    }
+    await finalizeRun(summary, date, runStart);
 
     const pub = summary.published.length;
     const dis = summary.discarded.length;

@@ -287,9 +287,30 @@ function checkDailyJobs(claudeOk, netOk) {
       fresh: () => existsSync(join(ROOT, `runs/parrot-${today}.log`)),
     },
     {
+      // fresh 는 **오늘 로그 존재**만 본다. 예전엔 `state/infra-observer.json` 24h 이내를 OR 로
+      // 인정했는데, 어제 10:20 실행분이 오늘 10:00 점검에서 23.7h 라 "오늘 실행 확인" 거짓초록을
+      // 냈다(2026-08-13 재부팅 때 실측). 하루 1회 잡의 신선도 판정에 24h 슬라이딩 창은 맞지 않는다.
       key: 'infra', label: 'Woodpecker 인프라', due: 10, heavy: false,
       script: 'scripts/report/infra-cron.sh',
-      fresh: () => existsSync(join(ROOT, `runs/infra-${today}.log`)) || fileAgeMin(join(ROOT, 'state/infra-observer.json')) < 24 * 60,
+      fresh: () => existsSync(join(ROOT, `runs/infra-${today}.log`)),
+    },
+    // ↓ 아래 3종은 2026-08-13 추가. 잡 목록에 없어서 **아무도 보충하지 않던** 사각지대였다
+    //   (재부팅으로 09:05·09:08·02:00 을 놓치면 그날은 그냥 결방 — 사람이 눈치채야 했다).
+    {
+      key: 'site', label: 'Goose 사이트 관제', due: 10, heavy: false,
+      script: 'scripts/report/site-cron.sh',
+      fresh: () => existsSync(join(ROOT, `runs/site-${today}.log`)),
+    },
+    {
+      key: 'insight', label: 'Mole 인사이트', due: 10, heavy: false,
+      script: 'scripts/report/insight-cron.sh',
+      fresh: () => existsSync(join(ROOT, `runs/insight-${today}.log`)),
+    },
+    {
+      // 02:00 잡. 06:00·10:00 점검이 결손을 잡는다. 체인 자체가 flock 로 중복 방지.
+      key: 'curiosity-analytics', label: '호기심 성과수집', due: 3, heavy: false,
+      script: 'scripts/shorts-curiosity/analytics-cron.sh',
+      fresh: () => existsSync(join(ROOT, `runs/curiosity-analytics-${today}.log`)),
     },
   ];
 

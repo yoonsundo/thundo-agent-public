@@ -154,12 +154,12 @@ eq('🔴 원문이 비어 있어도(짧아도) 날조 판정이 아니다',
 section('② 🔴 factCheck — 기계가 막으면 claude 는 호출되지 않는다');
 
 let claudeCalls = 0;
+let seenPrompt = null;
 const llmStub = (p) => {
   claudeCalls++;
   seenPrompt = p;
   return JSON.stringify({ verdict: 'ok', note: '문맥과 뜻이 일치한다', source: URL, needs_correction: false });
 };
-let seenPrompt = null;
 
 claudeCalls = 0;
 const notFound = fcm.factCheck(ITEM({ quote_original: 'Do not give up. The beginning is always the hardest' }),

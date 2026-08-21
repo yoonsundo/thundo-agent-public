@@ -1,0 +1,191 @@
+{
+  "_note": "에이전트 마스코트 초상. 출처는 사용자 소유 레포 yoonsundo/punchgrow 의 크리처 자산이다. 원본 360x360 PNG 를 208x208 JPEG(q5)로 축소해 web/public/agent-portraits/ 에 둔다. ⚠ 배정은 creatures.json 메타데이터가 아니라 **이미지를 눈으로 보고** 했다 — 그 레포의 이미지와 메타데이터가 어긋나 있기 때문이다(예: PG-032 는 메타데이터상 '창꼬리매'인데 그림은 달팽이). 재배정할 때도 반드시 그림을 볼 것. ⚠ 경로가 /agents/ 가 아닌 이유: public/agents/ 는 미들웨어 로그인 게이트(/agents/*)에 잡혀 이미지가 307 로 튕긴다(배포 후 실측).",
+  "_source": "https://github.com/yoonsundo/punchgrow/tree/main/macos/Sources/PunchGrowMenuBar/Resources/Creatures",
+  "_generated": "2026-08-21",
+  "map": {
+    "lion": {
+      "creature": "PG-245",
+      "koName": "카르비"
+    },
+    "falcon": {
+      "creature": "PG-102",
+      "koName": "리토니온"
+    },
+    "dolphin": {
+      "creature": "PG-157",
+      "koName": "드라멜온"
+    },
+    "rhino": {
+      "creature": "PG-055",
+      "koName": "테르곤"
+    },
+    "panther": {
+      "creature": "PG-053",
+      "koName": "모르가트"
+    },
+    "cheetah": {
+      "creature": "PG-140",
+      "koName": "비비론리온"
+    },
+    "owl": {
+      "creature": "PG-182",
+      "koName": "바르켈름"
+    },
+    "magpie": {
+      "creature": "PG-215",
+      "koName": "리부테라"
+    },
+    "beaver": {
+      "creature": "PG-044",
+      "koName": "브로키"
+    },
+    "fox": {
+      "creature": "PG-216",
+      "koName": "에일크래그"
+    },
+    "wolf": {
+      "creature": "PG-181",
+      "koName": "에일시온"
+    },
+    "eagle": {
+      "creature": "PG-163",
+      "koName": "시엘록라크"
+    },
+    "bee": {
+      "creature": "PG-005",
+      "koName": "피코람"
+    },
+    "swan": {
+      "creature": "PG-249",
+      "koName": "벨리"
+    },
+    "raven": {
+      "creature": "PG-142",
+      "koName": "시엘록온"
+    },
+    "peacock": {
+      "creature": "PG-106",
+      "koName": "채로미라크"
+    },
+    "penguin": {
+      "creature": "PG-223",
+      "koName": "크랙베인"
+    },
+    "elephant": {
+      "creature": "PG-237",
+      "koName": "리프서지"
+    },
+    "crane": {
+      "creature": "PG-025",
+      "koName": "리토니"
+    },
+    "meerkat": {
+      "creature": "PG-016",
+      "koName": "타비콩"
+    },
+    "hummingbird": {
+      "creature": "PG-149",
+      "koName": "프라곤온"
+    },
+    "parrot": {
+      "creature": "PG-079",
+      "koName": "키리포스"
+    },
+    "spider": {
+      "creature": "PG-235",
+      "koName": "볼트슬러그"
+    },
+    "raccoon": {
+      "creature": "PG-234",
+      "koName": "코럴윙"
+    },
+    "lynx": {
+      "creature": "PG-135",
+      "koName": "오르딤온"
+    },
+    "badger": {
+      "creature": "PG-048",
+      "koName": "다노크"
+    },
+    "nightingale": {
+      "creature": "PG-218",
+      "koName": "시르그라운"
+    },
+    "fennec": {
+      "creature": "PG-226",
+      "koName": "브릭위브"
+    },
+    "mole": {
+      "creature": "PG-162",
+      "koName": "브로키라크"
+    },
+    "heron": {
+      "creature": "PG-056",
+      "koName": "라그센"
+    },
+    "deer": {
+      "creature": "PG-236",
+      "koName": "드림크래들"
+    },
+    "hedgehog": {
+      "creature": "PG-158",
+      "koName": "다노크온"
+    },
+    "robin": {
+      "creature": "PG-003",
+      "koName": "누비엘"
+    },
+    "firefly": {
+      "creature": "PG-186",
+      "koName": "테셀칸"
+    },
+    "goose": {
+      "creature": "PG-008",
+      "koName": "세루비"
+    },
+    "woodpecker": {
+      "creature": "PG-019",
+      "koName": "키리퐁"
+    },
+    "sheepdog": {
+      "creature": "PG-061",
+      "koName": "에일반"
+    },
+    "dev-orchestrator": {
+      "creature": "PG-241",
+      "koName": "네비르"
+    },
+    "dev-planner": {
+      "creature": "PG-006",
+      "koName": "라미오"
+    },
+    "dev-architect": {
+      "creature": "PG-253",
+      "koName": "그라니"
+    },
+    "dev-designer": {
+      "creature": "PG-105",
+      "koName": "채로미온"
+    },
+    "dev-coder": {
+      "creature": "PG-014",
+      "koName": "쪼르카"
+    },
+    "dev-tester": {
+      "creature": "PG-034",
+      "koName": "제피락"
+    },
+    "dev-security": {
+      "creature": "PG-047",
+      "koName": "자르펜"
+    },
+    "dev-verifier": {
+      "creature": "PG-036",
+      "koName": "벨로큐"
+    },
+    "dev-devops": {
+      "creature": "PG-021",
+      "koName": "나록비"
+    }
+  }
+}

@@ -25,7 +25,6 @@ const EVENT_COLORS = {
   BUDGET_KILL:       0xED4245,  // 빨강
   MISSED_RUN:        0xFEE75C,  // 노랑
   TRIPWIRE:          0xFF0000,  // 선명한 빨강
-  CROSSPUB_SESSION_EXPIRED: 0xFEE75C,  // 노랑 — 액션 필요(재로그인)
   GIT_PERSIST_FAIL:  0xED4245,  // 빨강 — 발행물·감사로그가 원격에 안 남는 상태
   GIT_PERSIST_PAUSED: 0xFEE75C, // 노랑 — 의도된 일시정지(사람이 만든 상태, 실패 아님)
 };

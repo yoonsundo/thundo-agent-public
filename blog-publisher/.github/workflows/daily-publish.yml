@@ -1,0 +1,69 @@
+name: daily-publish (API 폴백 — 수동 전용)
+
+# ⚠️ 자동 스케줄 제거됨. 정규 일일 발행은 "구독 기반 WSL cron"(scripts/daily-claude-cron.sh
+#    → claude -p → 실 서브에이전트)이 담당한다. 설계가 Claude 구독 기반이므로 GitHub(API)에서
+#    자동 실행하지 않는다. 이 워크플로는 ANTHROPIC_API_KEY 가 있을 때만 쓰는 수동 폴백이다.
+on:
+  workflow_dispatch: {}   # 수동 트리거 전용(API 폴백)
+
+# 발행 산출물·dedup 상태·감사로그를 repo 에 커밋백하려면 쓰기 권한 필요
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps (lint 게이트용 markdownlint)
+        run: npm install --no-audit --no-fund
+
+      - name: Run real-LLM pipeline → blog_posts DB 적재
+        env:
+          # 실 LLM 작가(Anthropic API) — mock 아님. 작가→게이트13→통과시 발행.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BLOG_DB_LIVE: '1'
+          # 홈페이지와 동일 Supabase 프로젝트(blog_posts 쓰기 — service_role)
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # 선택: 감사 서명 / 알림 (없으면 자동 스킵)
+          AUDIT_SIGNING_KEY: ${{ secrets.AUDIT_SIGNING_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: node scripts/daily-real-publish.mjs
+
+      - name: Self-evolution cycle (자동학습 — 작가 EVOLVE-BLOCK 진화)
+        continue-on-error: true   # 진화 실패가 발행을 막지 않게
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUDIT_SIGNING_KEY: ${{ secrets.AUDIT_SIGNING_KEY }}
+          EVOLVE_K: '2'   # 변종당 채점 생성 편수(비용 조절)
+        run: node scripts/evolve/evolve-cycle.mjs
+
+      - name: Commit back (발행물·진화·상태·감사 영속화)
+        run: |
+          git config user.name  "thundo-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add published/ state/ runs/ .omc/audit/ .claude/agents/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 스킵"
+          else
+            git commit -m "chore(daily): 자동발행 $(date -u +%Y-%m-%d)"
+            git push
+          fi

@@ -19,6 +19,7 @@ import { paths, loadBudget } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 import { appendRecord } from './store-supabase.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('hub/briefing');
 
 // ─── 내부 헬퍼 ────────────────────────────────────────────────────────────────
@@ -295,7 +296,7 @@ export async function generateBriefing(opts = {}) {
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
-if (process.argv[1] && process.argv[1].endsWith('briefing.mjs')) {
+if (isMainModule(import.meta.url)) {
   generateBriefing()
     .then((record) => console.log(formatBriefingText(record)))
     .catch((err) => { console.error(err?.message ?? String(err)); process.exit(1); });

@@ -22,6 +22,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+
+import { runGateCli, GateError } from './lib/gate-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 // ── 임계값 (캘리브레이션 후 값) ─────────────────────────────
 const TITLE_MIN = 20;   // 원 스펙 30자 → 하향 (seed 최단 29자)
 const TITLE_MAX = 65;   // 원 스펙 60자 → 소폭 상향 (seed 최장 60자 + 여유 5자)
@@ -186,19 +189,13 @@ function checkFaq(body) {
 
 // ── 메인 ────────────────────────────────────────────────────
 
-function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) {
-    process.stderr.write('Usage: check-seo.mjs <draft.md>\n');
-    process.exit(2);
-  }
+export function evaluate(draftPath) {
 
   let raw;
   try {
     raw = readFileSync(resolve(draftPath), 'utf8');
   } catch (e) {
-    process.stderr.write(`check-seo: 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const { meta, body } = parseFrontmatter(raw);
@@ -228,8 +225,15 @@ function main() {
     },
   };
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(pass ? 0 : 1);
+  return result;
 }
 
-main();
+// CLI 로 직접 실행될 때만 돈다. 가드가 없으면 run-all-gates 가 import 하는 순간
+// 이 게이트가 stdout 을 쓰고 process.exit 해 버린다(2026-08-21 실측).
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'seo',
+    evaluate,
+    usage: 'Usage: check-seo.mjs <draft.md>',
+  });
+}

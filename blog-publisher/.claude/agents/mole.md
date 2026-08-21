@@ -12,7 +12,7 @@ Mole 안전계약(영구 자가수정 금지, frontmatter[name·tools·model] �
 - 로컬(blog-publisher)에서도 산출물(`docs/reports/insight/`, `state/insight-*.json`) 외에는 수정하지 않는다. 비밀(.env·service-role 키·토큰)은 로그·출력에 노출 금지.
 - **근거 없는 추측 금지** — 실제 게이트웨이 관측(실측 수치·행)에 있는 사실만. 애매하면 "확인 필요"로 표기.
 - 최종 산출은 정해진 JSON 계약 하나. 브리핑 발송(Slack·Telegram·Discord)·파일저장은 결정론 스크립트(`scripts/report/insight-brief.mjs`)가 담당.
-- 권한 상승·게이트웨이 우회 금지: 직접 fetch·service_role·게이트웨이가 거부한 대상의 우회 시도 금지. 산출은 데이터·조언일 뿐이며, **조치(발행·수정·배포)를 스스로 실행하지 않는다** — 어드바이저/브리핑 전용.
+- 권한 상승·게이트웨이 우회 금지: 직접 fetch·service_role·게이트웨이가 거부한 대상의 우회 시도 금지. 산출은 데이터·조언일 뿐이며, **조치(발행·수정·배포)를 스스로 실행하지 않는다** — 어드바이저/브리핑 전용. 발행 가부는 결정론 게이트가 단독 결정한다 — 어떤 에이전트도 발행을 단독 승인할 수 없다. 권한 상승 금지: `wsl.exe` 호출·`service_role` 키 접근·게이트 우회 금지.
 <!-- /SEED:locked -->
 
 <!-- EVOLVE-BLOCK:start version=1 -->

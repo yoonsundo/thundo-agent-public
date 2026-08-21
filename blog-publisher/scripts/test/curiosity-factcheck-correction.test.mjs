@@ -17,7 +17,7 @@ process.env.RUN_MODE = process.env.RUN_MODE || 'mock';
 
 const { normalizeFactcheck, applyCorrection, noteDemandsCorrection, noteFlagsSubject } =
   await import('../shorts-curiosity/factcheck.mjs');
-const { resolveFactcheck, buildUploadMeta, shortenTitleBody } =
+const { resolveFactcheck, buildUploadMeta, shortenTitleBody, recheckCorrectedSubject } =
   await import('../shorts-curiosity/run-curiosity.mjs');
 
 let passN = 0, failN = 0;
@@ -179,6 +179,50 @@ ok('발행 제목 전부 40자 이내', slots.every(s => buildUploadMeta(s.publi
 // 후보가 전부 보류면 발행 0 → 상위(재고 폴백·상한 완화)가 슬롯을 채우는 기존 경로로 넘어간다.
 const allHeld = runSlot([{ item: SIOUX, fc: asItHappened }], []);
 eq('후보 전멸 시엔 publish 없음(상위 폴백으로)', allHeld.published, null);
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (g) 정정 **뒤에** 다시 중복 검사한다 (2026-08-21 신설)
+//
+// 실사고: 유사도 게이트는 pick 단계에서 **정정 전** 문구로 판정하는데, 팩트체크가 그 뒤에
+// subject 를 고쳐 쓴다. 정정은 사실을 바로잡는 일이라 서로 다르게 적혀 있던 두 후보를 같은
+// 사실로 수렴시킬 수 있다. 실제로 그렇게 5일 간격 재발행이 나갔다:
+//   백로그 "총알에 팔…스프링 손…30년"  → 정정 → 발행 "포탄에 오른팔…철제 의수…40년"
+//   (이미 발행돼 있던 "대포알에 오른손…철제 의수…40년" 과 사실상 동일)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n(g) 정정 후 중복 재검사');
+{
+  const SIM = { enabled: true, bigram_jaccard: 0.45, topic_jaccard: 0.14, substring: true, min_chars: 6 };
+  const cfgSim = { pick: { similarity: SIM } };
+  const priorSubject = '대포알에 오른손을 잃고 철제 의수로 40년을 더 싸운 기사';
+  const index = { old1: { status: 'uploaded', subject: priorSubject } };
+
+  const corrected = { id: 'new', subject: '포탄에 오른팔을 잃고 철제 의수로 40년 더 싸운 기사' };
+  const hit = recheckCorrectedSubject(corrected, { cfg: cfgSim, corrected: true, index, backlog: [] });
+  ok('정정본이 기존 발행과 같은 소재면 잡아낸다', hit.dup, JSON.stringify(hit));
+  eq('무엇과 겹쳤는지 알려준다', hit.against, priorSubject);
+
+  // 정정이 없었으면 이미 pick 단계에서 같은 문구로 검사됐다 → 중복 재검사 안 함.
+  const skipped = recheckCorrectedSubject(corrected, { cfg: cfgSim, corrected: false, index, backlog: [] });
+  ok('정정이 없으면 재검사하지 않는다', !skipped.dup);
+
+  // 정정본이 새로운 소재면 통과해야 한다(정정 자체를 벌하면 안 된다).
+  const fresh = recheckCorrectedSubject({ id: 'n2', subject: '트로이 목마는 일리아스에 없다' },
+    { cfg: cfgSim, corrected: true, index, backlog: [] });
+  ok('정정본이 새 소재면 통과', !fresh.dup);
+
+  // 유사도 자체를 끈 설정이면 재검사도 하지 않는다(설정 존중).
+  const off = recheckCorrectedSubject(corrected,
+    { cfg: { pick: { similarity: { enabled: false } } }, corrected: true, index, backlog: [] });
+  ok('similarity.enabled=false 면 재검사 안 함', !off.dup);
+
+  // 인덱스가 망가져 있어도 크래시하지 않고, 근거 없이 막지도 않는다(비차단 계약).
+  // ⚠ index: null 을 넘기면 `??` 폴백으로 **실제 state 를 읽는다** — 그건 검증이 아니라 사고다.
+  //    비교 대상이 없다는 상황을 만들려면 '값이 망가진 인덱스'를 명시적으로 넘겨야 한다.
+  const broken = recheckCorrectedSubject(corrected,
+    { cfg: cfgSim, corrected: true, index: { a: null, b: { status: 'uploaded' } }, backlog: [] });
+  eq('망가진 인덱스에서는 차단하지 않는다', broken.dup, false);
+}
 
 console.log(`\n팩트체크 정정 게이트(US-010): ${passN} pass / ${failN} fail`);
 process.exit(failN === 0 ? 0 : 1);

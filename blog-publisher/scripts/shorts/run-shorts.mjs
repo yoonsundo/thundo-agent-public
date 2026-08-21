@@ -12,7 +12,7 @@
 import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
 import { makeLogger } from '../lib/log.mjs';
-import { listPublishedSlugs } from '../crosspub/lib.mjs';
+import { listPublishedSlugs } from '../lib/published-doc.mjs';
 import { loadShortsConfig, loadIndex, ensureDirs, pendingDir, markQueued, markUploaded, isMainModule } from './lib.mjs';
 import { pickBestCandidate } from './select.mjs';
 import { generateScript } from './script.mjs';

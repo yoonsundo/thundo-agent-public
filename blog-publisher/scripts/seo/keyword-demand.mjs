@@ -27,6 +27,7 @@ import { loadNaverSeoConfig, loadCreds, isMockMode } from './naver-search.mjs';
 import { fetchDemandScores } from './datalab.mjs';
 import { fetchKeywordStats, loadSearchAdCreds, normKey } from './searchad.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('keyword-demand');
 
 const CFG_PATH        = 'config/keyword-demand.json';
@@ -370,6 +371,6 @@ async function main() {
 }
 
 // 단독 실행일 때만 main (테스트는 import 만)
-if (process.argv[1] && process.argv[1].endsWith('keyword-demand.mjs')) {
+if (isMainModule(import.meta.url)) {
   main().then(c => process.exit(c)).catch(e => { log.error(`실행오류: ${e.message}`); process.exit(2); });
 }

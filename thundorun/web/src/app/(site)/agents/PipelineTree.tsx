@@ -1,3 +1,4 @@
+import AgentAvatar from '@/components/ui/AgentAvatar';
 /**
  * PipelineTree — 팀별 접이식 워크플로 (각 팀 내부는 top→bottom).
  *
@@ -49,11 +50,35 @@ const ALWAYS_ON: (FlowNode & { href: string })[] = [
   { title: '스파이더', sub: '정찰·분석', href: '#agent-spider', variant: 'agent' },
 ];
 
+// 팀장(C레벨) — 파이프라인을 **실행하지 않는다.** 매일 CEO와 경영회의를 열어 성과를 브리핑하고
+// 다음 전략을 제안하는 자리다. 그래서 팀 실행 흐름 안이 아니라 별도 박스로 둔다 —
+// 흐름 안에 끼워 넣으면 "팀장을 거쳐야 글이 나간다"는 잘못된 그림이 된다.
+const LEADS: (FlowNode & { href: string })[] = [
+  { title: '팰컨', sub: '블로그팀장 · CPO', href: '#agent-falcon', variant: 'agent' },
+  { title: '돌핀', sub: '유튜브팀장 · CMO', href: '#agent-dolphin', variant: 'agent' },
+  { title: '라이노', sub: '개발팀장 · CTO', href: '#agent-rhino', variant: 'agent' },
+  { title: '팬서', sub: '인스타팀장 · CBO', href: '#agent-panther', variant: 'agent' },
+];
+
 // 개발팀 병렬 검토 — 코더 산출물을 테스터·보안이 동시에 검토(둘 다 통과해야 검증자로).
 const DEV_REVIEW: FlowNode[] = [
   { title: '테스터', sub: '동작 검증', href: '#agent-dev-tester', variant: 'agent' },
   { title: '보안', sub: '보안 검토', href: '#agent-dev-security', variant: 'agent' },
 ];
+
+/**
+ * 노드 아바타 — href(`#agent-<id>`)에서 에이전트 id 를 뽑아 프로필 카드와 **같은 얼굴**을 쓴다.
+ *
+ * ⚠ 이전에는 `title.slice(0, 1)` 이라 흐름도에서도 첫 글자가 겹쳤다 — 이 화면 안에서만도
+ *   "기능·신메뉴 요청"과 "기획자"가 둘 다 "기" 였다. 카드 쪽은 초상으로 고쳤는데 흐름도만
+ *   남으면 같은 에이전트가 두 화면에서 다르게 보인다.
+ * id 가 없는 노드(트리거·처리 단계)는 아바타를 쓰지 않는다 — 사람이 아니라 단계다.
+ */
+function NodeAvatar({ title, href }: { title: string; href?: string }) {
+  const id = href?.startsWith('#agent-') ? href.slice('#agent-'.length) : '';
+  if (!id) return null;
+  return <AgentAvatar id={id} name={title} sizeClass="" />;
+}
 
 /** 노드 — 부모 트랙을 채운다. agent는 앵커 링크, trigger/process는 정적 노드. */
 function Node({ title, sub, href, variant }: FlowNode) {
@@ -71,9 +96,7 @@ function Node({ title, sub, href, variant }: FlowNode) {
 
   const inner = (
     <>
-      <span className="avatar avatar-neutral" aria-hidden="true">
-        {title.slice(0, 1)}
-      </span>
+      <NodeAvatar title={title} href={href} />
       <span style={{ minWidth: 0 }}>
         <span className="card-title" style={{ display: 'block' }}>
           {title}
@@ -157,9 +180,7 @@ function ParallelGroup({ items }: { items: FlowNode[] }) {
 function FloatingNode({ title, sub, href }: FlowNode & { href: string }) {
   return (
     <a href={href} className="stack-2 card-link" style={{ width: 104 }}>
-      <span className="avatar avatar-neutral" aria-hidden="true">
-        {title.slice(0, 1)}
-      </span>
+      <NodeAvatar title={title} href={href} />
       <span className="card-title">{title}</span>
       <span className="card-meta">{sub}</span>
     </a>
@@ -198,7 +219,7 @@ export default function PipelineTree() {
         <p className="kicker">워킹 트리</p>
         <h2 style={{ marginTop: 'var(--space-1)' }}>파이프라인</h2>
         <p className="text-muted" style={{ marginTop: 'var(--space-2)' }}>
-          4개 팀 · 필요한 흐름만 펼쳐서 확인 · 노드를 누르면 에이전트 카드로 이동
+          경영회의 1 · 4개 팀 · 필요한 흐름만 펼쳐서 확인 · 노드를 누르면 에이전트 카드로 이동
         </p>
         <p className="text-muted">
           팀 이름을 클릭하면 실제 업무 순서와 담당 에이전트가 단계별로 펼쳐집니다. 흐름 안의
@@ -208,9 +229,22 @@ export default function PipelineTree() {
 
       {/* 캔버스 — 데스크톱 2열, 900px 이하 1열. 팀 내부만 세로 흐름. */}
       <div className="card-outline" style={{ padding: 'var(--space-6) var(--space-4)' }}>
+        {/* 경영회의 — 네 팀 위의 의사결정 계층. 실행이 아니라 전략·판정이 일어나는 자리다. */}
+        <div style={{ marginBottom: 'var(--space-4)' }}>
+          <PipelineBox label="경영회의 · 매일 09:20" summary="CEO 1인 · 팀장 4인 · 브리핑과 반론">
+            <Stage node={{ title: '라이언', sub: 'CEO · 악마의 대변인', href: '#agent-lion', variant: 'agent' }} />
+            <VConnector label="브리핑" />
+            <div className="row" style={{ flexWrap: 'wrap', justifyContent: 'center', gap: 'var(--space-6)' }}>
+              {LEADS.map((a) => (
+                <FloatingNode key={a.title} {...a} />
+              ))}
+            </div>
+          </PipelineBox>
+        </div>
+
         <div className="grid-2 grid-start">
           {/* 마케팅 팀 — 블로그 발행 파이프라인 */}
-          <PipelineBox label="마케팅 팀 · 블로그 발행" summary="수집부터 발행·감사까지 · 8단계">
+          <PipelineBox label="마케팅 팀 · 블로그 발행" summary="수집부터 발행·감사까지 · 8단계 · 팀장 팰컨">
             <Stage node={{ title: '매일 아침 실행', sub: '스케줄 트리거', variant: 'trigger' }} />
             <VConnector />
             <Stage node={{ title: '라이언', sub: '오케스트레이터', href: '#agent-lion', variant: 'agent' }} />
@@ -231,7 +265,7 @@ export default function PipelineTree() {
           </PipelineBox>
 
           {/* 개발팀 — 홈페이지 기능 추가·신메뉴 개설 파이프라인 */}
-          <PipelineBox label="개발팀 · 홈페이지" summary="요청부터 검증·배포까지 · 9단계">
+          <PipelineBox label="개발팀 · 홈페이지" summary="요청부터 검증·배포까지 · 9단계 · 팀장 라이노">
             <Stage node={{ title: '기능·신메뉴 요청', sub: '운영자 트리거', variant: 'trigger' }} />
             <VConnector />
             <Stage node={{ title: '지휘자', sub: '오케스트레이터', href: '#agent-dev-orchestrator', variant: 'agent' }} />
@@ -252,7 +286,7 @@ export default function PipelineTree() {
           </PipelineBox>
 
           {/* 호기심 쇼츠 팀 — 유튜브 쇼츠 파이프라인 */}
-          <PipelineBox label="호기심 쇼츠 · 유튜브" summary="아이디어부터 유튜브 발행까지 · 8단계">
+          <PipelineBox label="호기심 쇼츠 · 유튜브" summary="아이디어부터 유튜브 발행까지 · 8단계 · 팀장 돌핀">
             <Stage node={{ title: '매일 10·12·18시', sub: '시차 스케줄', variant: 'trigger' }} />
             <VConnector />
             <Stage node={{ title: '라쿤', sub: '아이디어 발굴', href: '#agent-raccoon', variant: 'agent' }} />
@@ -271,7 +305,7 @@ export default function PipelineTree() {
           </PipelineBox>
 
           {/* 카드뉴스 팀 — 인스타그램 카드뉴스 파이프라인 */}
-          <PipelineBox label="카드뉴스 · 인스타그램" summary="소재부터 인스타 발행까지 · 9단계">
+          <PipelineBox label="카드뉴스 · 인스타그램" summary="소재부터 인스타 발행까지 · 9단계 · 팀장 팬서">
             <Stage node={{ title: '하루 2편', sub: '스케줄 트리거', variant: 'trigger' }} />
             <VConnector />
             <Stage node={{ title: '헤론', sub: '소재 발굴', href: '#agent-heron', variant: 'agent' }} />

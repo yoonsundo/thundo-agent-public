@@ -4,7 +4,7 @@
 //
 // 사용: node scripts/report/daily-brief.mjs [YYYY-MM-DD]
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { isTransientClaudeError } from '../lib/claude-cli.mjs';
 
 const DATE = process.argv[2] || new Date().toISOString().slice(0, 10);
@@ -183,7 +183,11 @@ ${JSON.stringify(facts)}`;
   const maxRetries = parseInt(process.env.CLAUDE_RETRIES || '2', 10);
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const out = execSync(`claude -p ${JSON.stringify(prompt)} --dangerously-skip-permissions`, { encoding: 'utf8', timeout: 200000, maxBuffer: 10 * 1024 * 1024 });
+      // execFileSync(배열 인자) — 셸을 거치지 않는다. 예전엔 execSync 로 셸 문자열을 조립했는데
+      // JSON.stringify 는 `"`·`\` 만 이스케이프할 뿐 `$(...)`·백틱은 그대로 남긴다. prompt 에는
+      // 그날의 초안 제목·에이전트 기록(= Reddit/HN 수집물과 LLM 출력에서 온 값)이 들어가므로
+      // 제목 하나로 이 박스에서 임의 명령이 실행됐다(.env 전체 크리덴셜 보유 프로세스). 실증 완료.
+      const out = execFileSync('claude', ['-p', prompt, '--dangerously-skip-permissions'], { encoding: 'utf8', timeout: 200000, maxBuffer: 10 * 1024 * 1024 });
       const j = JSON.parse(out.replace(/^```\w*\n?/, '').replace(/\n?```\s*$/, '').match(/\{[\s\S]*\}/)[0]);
       for (const a of agents) if (j[a.id]) a.reflection = j[a.id];
       console.log('[daily-brief] 회고 생성:', Object.keys(j).length, '에이전트');
@@ -333,7 +337,19 @@ async function build() {
   // ── ① DB upsert ──
   if (SUPA_URL && SUPA_KEY) {
     try {
-      const r = await fetch(SUPA_URL.replace(/\/$/, '') + '/rest/v1/agent_reports?on_conflict=date', { method: 'POST', headers: { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ date: DATE, summary, agents }) });
+      // ⚠ merge-duplicates 는 **행 단위 교체**다. 경영회의(run-board)가 같은 날 `summary.board` 를
+      // 써 두는데, 여기서 그걸 모르는 summary 로 덮으면 회의 결과가 조용히 사라진다(프론트는
+      // board 를 optional 로 다뤄서 티도 안 난다). 그래서 쓰기 전에 기존 board 를 읽어 실어 보낸다.
+      let mergedSummary = summary;
+      try {
+        const prev = await fetch(SUPA_URL.replace(/\/$/, '') + `/rest/v1/agent_reports?date=eq.${DATE}&select=summary`, { headers: { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY } });
+        if (prev.ok) {
+          const rows = await prev.json();
+          const existingBoard = Array.isArray(rows) && rows[0]?.summary?.board;
+          if (existingBoard) { mergedSummary = { ...summary, board: existingBoard }; console.log('[daily-brief] 기존 경영회의 결과 보존'); }
+        }
+      } catch (e) { console.error('[daily-brief] 기존 board 조회 경고(계속):', e.message); }
+      const r = await fetch(SUPA_URL.replace(/\/$/, '') + '/rest/v1/agent_reports?on_conflict=date', { method: 'POST', headers: { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ date: DATE, summary: mergedSummary, agents }) });
       console.log('[daily-brief] DB upsert HTTP', r.status, r.status < 300 ? '✅' : await r.text().then(t => t.slice(0, 150)));
     } catch (e) { console.error('[daily-brief] DB upsert 오류:', e.message); }
   }

@@ -6,6 +6,8 @@ import { fetchPopularSlugViews, joinPopularPosts, toPublicPopularPosts } from '@
 import { getPinnedNotices } from '@/server/notices';
 import { SHOW_NOTICES } from '@/lib/featureFlags';
 import { getProjects } from '@/server/projects';
+import { getActiveVideos } from '@/server/videos';
+import { getActiveAgents } from '@/server/agents';
 import type { Profile, Stat } from '@/components/ProjectsDashboard';
 
 // ISR 5분 캐시 — 홈은 요청별 입력(쿠키·쿼리)이 없어 정적 재검증으로 충분.
@@ -17,13 +19,17 @@ export const metadata = {
 };
 
 export default async function HomeLandingPage() {
-  const [posts, dbProfile, pinnedNotices, popularSlugViews, projects] = await Promise.all([
-    getPostSummaries(),
-    getProfile(),
-    getPinnedNotices(),
-    fetchPopularSlugViews(),
-    getProjects(),
-  ]);
+  // ⚠ videos·agents 는 쿠키·헤더를 쓰지 않으므로 홈의 ISR(revalidate=300)을 깨지 않는다(확인함).
+  const [posts, dbProfile, pinnedNotices, popularSlugViews, projects, allVideos, allAgents] =
+    await Promise.all([
+      getPostSummaries(),
+      getProfile(),
+      getPinnedNotices(),
+      fetchPopularSlugViews(),
+      getProjects(),
+      getActiveVideos(),
+      getActiveAgents(),
+    ]);
   const postCount = posts.length;
 
   const profile: Profile = {
@@ -43,6 +49,15 @@ export default async function HomeLandingPage() {
   // 관리자는 ProjectsDashboard 가 클라이언트에서 따로 받아 채운다.
   const popularPosts = toPublicPopularPosts(joinPopularPosts(popularSlugViews, posts, 5));
 
+  // 홈은 미리보기다 — 전체 목록은 각 페이지에 있으므로 앞쪽 일부만 넘긴다.
+  const videos = allVideos.slice(0, 4).map((v) => ({
+    youtube_id: v.youtube_id,
+    title: v.title,
+    youtube_url: v.youtube_url,
+    thumbnail_url: v.thumbnail_url,
+  }));
+  const agents = allAgents.slice(0, 8).map((a) => ({ id: a.id, name: a.name, role: a.role, image_url: a.image_url }));
+
   const stats: Stat[] = [
     { label: '블로그 글', value: String(postCount), hint: '발행됨' },
     { label: '프로젝트', value: String(projects.length), hint: '공개됨' },
@@ -59,6 +74,8 @@ export default async function HomeLandingPage() {
         profile={profile}
         stats={stats}
         popularPosts={popularPosts}
+        videos={videos}
+        agents={agents}
       />
     </>
   );

@@ -60,6 +60,18 @@
   --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
   --shadow-lg: 0 12px 32px color-mix(in srgb, #2d2b2b 22%, transparent);
 
+  /* 모션 — 커브·지속시간·누름 배율을 토큰으로 둔다.
+     값을 직접 쓰지 않고 토큰을 거쳐야 `/run` 격리(.run-scope)가 성립한다.
+     커브는 Emil Kowalski 규범값(근사 금지). 내장 ease 는 약해서 의도가 안 읽힌다. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);        /* 진입·퇴장 — 시작이 빨라 반응해 보인다 */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);    /* 화면 안에서 이동·변형 */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);     /* iOS 계열 드로어 */
+  --dur-press: 160ms;   /* 누름 피드백 */
+  --dur-tip: 150ms;     /* 툴팁·작은 팝오버 */
+  --dur-menu: 200ms;    /* 드롭다운·셀렉트 */
+  --dur-panel: 260ms;   /* 모달·드로어 (UI 는 300ms 미만) */
+  --press-scale: 0.97;  /* 눌렀을 때 축소 배율 */
+
   --sidebar-w: 232px;
   --sidebar-w-collapsed: 60px;
   --topbar-h: 56px;
@@ -96,7 +108,11 @@ h1,h2,h3,h4,h5,h6 {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   line-height: 1.12; letter-spacing: -.015em; margin: 0 0 var(--space-2);
   text-wrap: balance;
+  /* 한글은 음절마다 끊을 수 있어서 기본값이면 어절 중간이 갈라진다("쌓이/면").
+     keep-all 로 어절 단위 개행을 강제하고, 긴 URL·식별자만 예외로 끊는다. */
+  word-break: keep-all; overflow-wrap: break-word;
 }
+p, li, blockquote, dd, figcaption { word-break: keep-all; overflow-wrap: break-word; }
 h1 { font-size: 42px; } h2 { font-size: 32px; } h3 { font-size: 25px; }
 h4 { font-size: 20px; } h5 { font-size: 16px; }
 h6 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
@@ -189,7 +205,7 @@ img { display: block; max-width: 100%; }
   .shell, .shell[data-collapsed="true"] { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 40;
     width: min(78vw, 300px); transform: translateX(-100%);
-    transition: transform .2s ease; overflow-y: auto; }
+    transition: transform var(--dur-menu) var(--ease-out); overflow-y: auto; }
   .shell[data-mobile-open="true"] .sidebar { transform: translateX(0); box-shadow: var(--shadow-lg); }
   .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 39; border: 0; padding: 0;
     cursor: pointer;
@@ -260,7 +276,36 @@ img { display: block; max-width: 100%; }
   font-weight: var(--font-heading-weight); font-size: 14px; line-height: 1.2;
   color: var(--color-text); background: transparent; border: 1px solid transparent;
   padding: var(--space-2) calc(var(--space-3) * 1.2); border-radius: var(--radius-md);
-  transition: background .12s ease; }
+  /* 속성을 명시한다 — `transition: all` 은 의도치 않은 속성까지 GPU 밖에서 움직인다.
+     값은 토큰으로. 직접 박으면 `/run` 격리(.run-scope)가 무력해진다. */
+  transition: background var(--dur-press) var(--ease-out),
+              transform var(--dur-press) var(--ease-out); }
+/* 누름 피드백 — 눌렀을 때 반응이 없으면 인터페이스가 안 듣는 것처럼 느껴진다.
+   배율은 토큰이라 `/run` 안에서는 1(=변화 없음)로 되돌아간다. */
+.btn:active:not(:disabled) { transform: scale(var(--press-scale)); }
+/* 터치 기기에서만 44px 최소 높이. 실측(iPhone 13 프로필): `.btn` 34.8px → 44px,
+   `.nav-item`·`.list-row` 40px → 44px. 데스크톱까지 키우면 화면 밀도가 전반적으로 바뀌므로
+   coarse 포인터로 한정한다(마우스 사용자는 지금 밀도를 그대로 쓴다). */
+@media (pointer: coarse) {
+  /* 세로 가운데 정렬은 따로 줄 필요가 없다 — 세 선택자 모두 이미 flex + align-items:center 다
+     (`.btn`:273, `.nav-item`:223, `.list-row`:642). 늘어난 높이 안에서 자동으로 가운데 온다.
+     실제로 재선언해 봤다가 아무 효과도 없는 죽은 규칙이라 지웠다. */
+  .btn, .nav-item, .list-row { min-height: 44px; }
+  /* 탭도 손가락으로 누르는 대상이다.
+     실측(iPhone 13, 터치 컨텍스트): 글자만 있는 탭 41.69px → 44px 로 올라간다.
+     ⚠ `display: inline-flex` 를 함께 줬다가 뺐다 — 버튼은 기본이 inline-block 이라
+        min-height 가 그냥 먹는데, inline-flex 로 바꾸면 아이콘+글자 탭(`/run`)이
+        46.69px → 44px 로 **오히려 줄었다**(사후 리뷰 실측). 필요 없고 해로웠다. */
+  .tab { min-height: 44px; }
+
+  /* `/run` 격리 — 편집기는 개편 대상이 아니다(사용자 결정).
+     ⚠ 토큰 되돌림(.run-scope 의 --dur-* 와 --press-scale)만으로는 부족하다. 이 44px 는 토큰이 아니라
+        치수 선언이라 그 스코프를 그냥 통과한다. 동결 8파일이 전부 `.btn` 을 쓰고(13건),
+        특히 `.btn-icon`(34×34px)은 CSS 규격상 min-height 가 height 를 이겨
+        터치 기기에서 **34×44 비정사각형**이 된다. 그래서 여기서 명시적으로 되돌린다.
+     교훈: 격리는 "토큰"이 아니라 "이 스코프에 새로 적용되는 모든 것"을 기준으로 점검해야 한다. */
+  .run-scope .btn, .run-scope .nav-item, .run-scope .list-row { min-height: 0; }
+}
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-primary { background: var(--color-accent); color: #fff; }
 .btn-primary:hover:not(:disabled) { background: var(--color-accent-600); }
@@ -303,7 +348,14 @@ select.input { appearance: none; padding-right: 26px;
 textarea.input { min-height: 90px; resize: vertical; }
 .field-hint { font-size: 11px; margin-top: 4px;
   color: color-mix(in srgb, var(--color-text) 50%, transparent); }
-.field-error { font-size: 11px; margin-top: 4px; color: var(--color-danger); font-weight: 600; }
+/* 폼 검증 오류 — 저장을 눌렀을 때 갑자기 나타난다. 목적은 'state indication':
+   무엇이 잘못됐는지 눈이 따라가야 한다. 빈도는 occasional(저장 시도할 때만)이라 게이트 통과.
+   ⚠ 같은 상황의 `.banner` 는 **일부러 제외했다** — 동결 대상 BackgroundRemoval.tsx(사진편집)과
+      공개 홈 NoticeBanner 가 함께 쓰고 있어, 모션을 붙이면 편집기로 새고 홈은 매 방문마다 움직인다. */
+.field-error { font-size: 11px; margin-top: 4px; color: var(--color-danger); font-weight: 600;
+  transition: opacity var(--dur-menu) var(--ease-out), transform var(--dur-menu) var(--ease-out);
+  opacity: 1; transform: none; }
+@starting-style { .field-error { opacity: 0; transform: translateY(-4px); } }
 .field[data-invalid="true"] .input { border-color: var(--color-danger);
   background: color-mix(in srgb, var(--color-danger) 6%, var(--color-surface)); }
 .radio, .check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; }
@@ -329,17 +381,28 @@ textarea.input { min-height: 90px; resize: vertical; }
 .seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; }
 .switch .track { width: 38px; height: 20px; flex: none; background: var(--color-neutral-400);
-  position: relative; transition: background .15s ease; border-radius: var(--radius-pill); }
+  position: relative; transition: background var(--dur-tip) var(--ease-out); border-radius: var(--radius-pill); }
 .switch .track::after { content: ""; position: absolute; inset: 2px auto 2px 2px;
   width: 16px; background: #fff; border-radius: var(--radius-pill);
-  transition: transform .15s ease; }
+  transition: transform var(--dur-tip) var(--ease-out); }
 .switch input:checked + .track { background: var(--color-accent); }
 .switch input:checked + .track::after { transform: translateX(18px); }
 
 /* 카드 / 지표 */
+/* 카드는 바닥에서 떠 있어야 한다.
+   ⚠ 기존엔 `background: var(--color-surface)`(#eae9e9) 였는데 페이지 바탕(#f3f2f2)과 거의 같은
+      회색이라 카드 경계가 안 보였다 — 화면 전체가 한 덩어리로 읽히는 '평평함'의 실체였다.
+      흰 표면 + 아주 옅은 테두리·그림자로 층을 만든다. 여백·모서리는 그대로 둔다(레이아웃 불변). */
 .card { display: flex; flex-direction: column; gap: var(--space-2);
   min-width: 0; overflow-wrap: anywhere; /* 긴 URL·해시가 좁은 폭에서 카드를 밀어내지 않게 */
-  padding: var(--space-4); background: var(--color-surface); border-radius: var(--radius-lg); }
+  padding: var(--space-4); background: var(--color-surface-raised);
+  border: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 2px color-mix(in srgb, #2d2b2b 6%, transparent),
+              0 8px 24px color-mix(in srgb, #2d2b2b 5%, transparent); }
+/* 부수 정보 카드 — 전부 흰색으로 띄우면 위계가 다시 사라진다. 배경에 눕혀 대비를 만든다. */
+.card-quiet { background: transparent; border-style: dashed;
+  border-color: var(--color-hairline); box-shadow: none; }
 .card-outline { background: transparent; border: 1px solid var(--color-hairline); }
 .card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); }
 .card-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
@@ -350,9 +413,17 @@ textarea.input { min-height: 90px; resize: vertical; }
 .elev-sm { box-shadow: var(--shadow-sm); } .elev-md { box-shadow: var(--shadow-md); }
 .elev-lg { box-shadow: var(--shadow-lg); }
 
-.stat { display: flex; flex-direction: column; gap: var(--space-1);
-  padding: var(--space-4); border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-lg); background: var(--color-bg); }
+/* 지표는 화면에서 가장 먼저 읽혀야 하는 숫자다. 기존엔 페이지 바탕색이라 더 안 보였다.
+   표면을 올려 대비를 만들고, 위계는 **숫자 크기**로만 만든다.
+   ⚠ 왼쪽 액센트 막대를 썼다가 뺐다(2026-08-19 사용자 지적). "둥근 카드 + 색 막대"는
+      AI 가 생성한 디자인에서 가장 흔하게 반복되는 조합이라 그 자체로 티가 난다.
+      강조가 필요하면 색 장식이 아니라 타이포와 여백으로 한다. */
+.stat { display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+  box-shadow: 0 1px 2px color-mix(in srgb, #2d2b2b 6%, transparent); }
 .stat-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
   color: color-mix(in srgb, var(--color-text) 55%, transparent); }
 .stat-value { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
@@ -424,8 +495,12 @@ textarea.input { min-height: 90px; resize: vertical; }
 
 /* 탭 */
 /* 좁은 폭에선 탭이 세로로 꺾이는 대신 가로 스크롤 — 넓은 화면 시각 불변(2026-07-30). */
-.tabs { display: flex; gap: var(--space-4); border-bottom: 1px solid var(--color-hairline);
-  overflow-x: auto; }
+/* 탭바는 세로로 눌리지 않는다.
+   flex 열 안에서 공간이 모자라면 기본값(flex-shrink:1)이라 탭바가 함께 찌그러진다 —
+   `/run` 편집기를 폰 가로(높이 320px)로 두면 탭바가 **1px 까지 붕괴**했다(사후 리뷰 실측).
+   작업공간(flex:1)이 줄어드는 것은 정상이지만, 조작 수단이 사라지면 안 된다. */
+.tabs { display: flex; flex: none; gap: var(--space-4);
+  border-bottom: 1px solid var(--color-hairline); overflow-x: auto; }
 .tab { padding: 9px 2px; font: inherit; font-size: 14px; background: none; border: 0;
   border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
   white-space: nowrap; flex: none;
@@ -455,13 +530,25 @@ textarea.input { min-height: 90px; resize: vertical; }
 /* 다이얼로그 / 드로어 */
 .dialog-backdrop { position: fixed; inset: 0; display: grid; place-items: center;
   padding: var(--space-4); z-index: var(--z-dialog);
-  background: color-mix(in srgb, #000 55%, transparent); }
+  background: color-mix(in srgb, #000 55%, transparent);
+  /* 열림 전환 — @starting-style 이 "붙는 순간의 시작값"을 정의해 JS 없이 진입을 만든다.
+     ⚠ 닫힘은 여기서 못 한다: 다이얼로그·드로어는 조건부 마운트라 사라질 때 재생될 DOM 이 없다.
+        닫힘을 하려면 컴포넌트 4곳(OrchestratorConsole·ConfirmDialog·SiteHeader·AgentChat)의
+        마운트 유지 로직을 고쳐야 해서 별도 단계로 미뤘다. */
+  transition: opacity var(--dur-panel) var(--ease-out);
+  opacity: 1; }
+@starting-style { .dialog-backdrop { opacity: 0; } }
 /* min-width:0 — .dialog-backdrop 이 grid 라 다이얼로그는 grid 아이템이고,
    아이템의 자동 최소크기(min-content)가 지정한 width 를 이겨 화면 밖으로 나갔다
    (390px 에서 머리글의 긴 브랜치 태그가 폭을 밀었다, 2026-07-31 실측). */
 .dialog { width: min(460px,100%); min-width: 0; display: flex; flex-direction: column; gap: var(--space-3);
   padding: var(--space-6); background: var(--color-bg); box-shadow: var(--shadow-lg);
-  border-radius: var(--radius-lg); }
+  border-radius: var(--radius-lg);
+  /* scale(0) 로 시작하지 않는다 — 아무것도 없던 곳에서 튀어나온 것처럼 보인다.
+     모달은 트리거에 매달린 팝오버가 아니므로 transform-origin 은 중앙이 맞다. */
+  transition: opacity var(--dur-panel) var(--ease-out), transform var(--dur-panel) var(--ease-out);
+  opacity: 1; transform: scale(1); }
+@starting-style { .dialog { opacity: 0; transform: scale(0.97); } }
 /* 자식 행도 줄어들 수 있어야 한다 — 아니면 다이얼로그는 100% 인데 안쪽 행이 밖으로 삐져나온다. */
 .dialog > * { min-width: 0; }
 .dialog-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 20px; }
@@ -475,7 +562,13 @@ textarea.input { min-height: 90px; resize: vertical; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px,92vw);
   z-index: var(--z-drawer); display: flex; flex-direction: column;
   background: var(--color-bg); border-left: 1px solid var(--color-hairline);
-  box-shadow: var(--shadow-lg); }
+  box-shadow: var(--shadow-lg);
+  /* 오른쪽에서 들어온다. 퍼센트라 폭이 바뀌어도 항상 자기 너비만큼 이동한다. */
+  transition: transform var(--dur-panel) var(--ease-drawer);
+  transform: translateX(0); }
+@starting-style { .drawer { transform: translateX(100%); } }
+.drawer-backdrop { transition: opacity var(--dur-panel) var(--ease-out); opacity: 1; }
+@starting-style { .drawer-backdrop { opacity: 0; } }
 .drawer-head { display: flex; align-items: center; gap: var(--space-3);
   padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--color-hairline); }
 .drawer-body { flex: 1; overflow: auto; padding: var(--space-6); }
@@ -483,8 +576,14 @@ textarea.input { min-height: 90px; resize: vertical; }
 /* 진행률 */
 .progress { height: 8px; width: 100%; background: color-mix(in srgb, var(--color-text) 10%, transparent);
   border-radius: var(--radius-pill); overflow: hidden; }
-.progress > span { display: block; height: 100%; background: var(--color-accent);
-  border-radius: var(--radius-pill); transition: width .3s ease; }
+/* 막대는 width 가 아니라 transform 으로 움직인다.
+   width 애니메이션은 레이아웃→페인트→합성을 전부 다시 돌리지만 transform 은 합성만 한다.
+   구조상 부모(.progress)가 이미 overflow:hidden 으로 잘라 주므로 래퍼를 새로 만들 필요가 없다.
+   막대는 항상 100% 폭이고 왼쪽으로 밀어 감춘다 — 0%면 -100%, 60%면 -40%.
+   ⚠ 채움값은 호출부가 인라인 transform 으로 준다(TrafficCharts·OrchestratorConsole). */
+.progress > span { display: block; height: 100%; width: 100%; background: var(--color-accent);
+  border-radius: var(--radius-pill); transform: translateX(-100%);
+  transition: transform var(--dur-panel) var(--ease-out); }
 .progress[data-tone="success"] > span { background: var(--color-success); }
 
 /* 스텝퍼 */
@@ -531,7 +630,7 @@ textarea.input { min-height: 90px; resize: vertical; }
 .tooltip::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 7px); left: 50%;
   transform: translateX(-50%); padding: 5px 9px; font-size: 11px; white-space: nowrap;
   background: var(--color-neutral-900); color: #f3f2f2; border-radius: var(--radius-sm);
-  opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+  opacity: 0; pointer-events: none; transition: opacity var(--dur-tip) var(--ease-out); }
 .tooltip:hover::after, .tooltip:focus-visible::after { opacity: 1; }
 
 /* 아코디언 (native details) */
@@ -542,7 +641,7 @@ textarea.input { min-height: 90px; resize: vertical; }
   padding: var(--space-3) var(--space-4); font-size: 14px; font-weight: 600; list-style: none; }
 .accordion > summary::-webkit-details-marker { display: none; }
 .accordion > summary::after { content: "▾"; margin-left: auto; font-size: 11px; opacity: .55;
-  transition: transform .15s ease; }
+  transition: transform var(--dur-tip) var(--ease-out); }
 .accordion[open] > summary::after { transform: rotate(180deg); }
 .accordion > summary:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
 .accordion-body { padding: 0 var(--space-4) var(--space-4); font-size: 13px;
@@ -565,6 +664,59 @@ textarea.input { min-height: 90px; resize: vertical; }
   align-items: center; justify-content: center; gap: var(--space-2);
   padding: var(--space-8) var(--space-4); text-align: center; }
 .launcher .btn { margin-top: var(--space-6); }
+
+/* `/run` 이미지 편집기 격리 — 개편 대상에서 제외(사용자 결정 2026-08-19).
+   `src/app/run/layout.tsx` 가 하위 전체를 이 클래스로 감싼다(동결 8파일 무수정).
+
+   `display: contents` 인 이유: 편집기 최상위가 `height:100dvh` + flex 열이라
+   래퍼가 박스를 만들면 높이 사슬이 끊긴다. contents 는 레이아웃에 참여하지 않으면서
+   CSS 변수 상속과 하위 선택자만 살린다.
+
+   ⚠ 변수 재선언만으로 격리가 되려면 **새 모션을 전부 토큰으로 써야 한다.**
+      `transition: transform 160ms ease` 처럼 값을 직접 박으면 이 스코프가 못 막는다.
+   ⚠ 편집기 자체 모션(LayerList 의 인라인 transform 등)은 건드리지 않는다 —
+      전역 `transition:none` 같은 일괄 차단은 편집기 조작감을 망친다. */
+.run-scope { display: contents; }
+.run-scope {
+  --dur-press: 0ms; --dur-tip: 0ms; --dur-menu: 0ms; --dur-panel: 0ms;
+  --press-scale: 1;
+}
+/* 표면 개편(카드 띄우기)도 편집기에는 적용하지 않는다.
+   `.card` 는 동결 8파일 중 5개에서 7번 쓰인다(BackgroundRemoval·ColorChange·ColorCorrection·
+   EraserTool·SizeTool). 전역으로 바꾸면 "건드리지 말라"고 못박은 화면이 그대로 변한다.
+   ⚠ 토큰이 아니라 선언이라 스코프가 자동으로 못 막는다 — 여기서 명시적으로 되돌린다
+     (터치 44px 이 같은 이유로 샜던 것과 동일한 함정). */
+.run-scope .card {
+  background: var(--color-surface);
+  border: 0;
+  box-shadow: none;
+}
+
+/* 홈 좌측 열 보강(11.16) — 영상 썸네일 · 에이전트 칩 */
+.video-thumb { width: 100%; aspect-ratio: 9 / 16; object-fit: cover;
+  border-radius: var(--radius-md); background: var(--color-surface); }
+/* 에이전트 칩 격자 — 최소폭을 168px 로 잡는다.
+   실측(1440px 라이브): 칩이 113px 이라 8개 **전부** 이름이 잘렸다("라이언 (Lic").
+   필요폭 = 가장 긴 이름 93px + 아바타 30 + gap 8 + 좌우 padding 16 = 147px.
+   여유를 둬 168px 로 하면 705px 컨테이너에서 4열(≈170px)이 되고 이름이 온전히 들어간다.
+   키트 `.grid-auto-sm`(104px)·`.grid-auto`(150px)로는 둘 다 모자라 전용 규칙을 둔다. */
+.agent-grid { display: grid; gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); }
+.agent-chip { display: flex; align-items: center; gap: var(--space-2); min-width: 0;
+  padding: var(--space-2); border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md); }
+/* 이름·역할을 세로로 쌓되 긴 값이 칩을 밀지 않게 최소크기를 푼다. */
+.agent-chip > .text-ellipsis { display: flex; flex-direction: column; }
+.agent-chip .card-title { font-size: 13px; }
+
+/* 스크롤 진입 — 뷰포트에 들어올 때 1회. 목적: 콘텐츠가 툭 나타나는 것 방지.
+   transform+opacity 만, 300ms 미만. 지연은 요소별 인라인으로 준다
+   (부모 CSS 변수로 자식 transform 을 몰면 자식 전원 스타일 재계산이 터진다). */
+.reveal { opacity: 0; transform: translateY(8px);
+  transition: opacity var(--dur-panel) var(--ease-out), transform var(--dur-panel) var(--ease-out); }
+.reveal.is-in { opacity: 1; transform: none; }
+/* JS 가 죽어도 콘텐츠는 보여야 한다 — 스크립트 없으면 애초에 숨기지 않는다. */
+.no-js .reveal { opacity: 1; transform: none; }
 
 /* 리스트 행 (테이블 대신 쓰는 목록) */
 .list { display: flex; flex-direction: column; }
@@ -600,7 +752,23 @@ textarea.input { min-height: 90px; resize: vertical; }
   border-radius: var(--radius-md); border-left: 3px solid var(--color-accent); }
 
 @media (prefers-reduced-motion: reduce) {
+  /* 기본은 전면 차단 유지 — 앞으로 추가되는 모션까지 자동으로 걸러 주는 안전망이라
+     개별 컴포넌트가 빠뜨려도 새지 않는다. */
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+
+  /* 예외: 자리가 움직이지 않는 '밝기 변화(페이드)'만 되살린다.
+     어지럼증의 원인은 이동이지 페이드가 아니다. 전부 끄면 창이 툭 튀어나와
+     무엇이 바뀌었는지 오히려 알아채기 어렵다(사용자 결정 2026-08-19).
+     ⚠ 이동은 반드시 함께 무력화한다 — 아래 transform 초기화가 그 역할이다. */
+  .dialog-backdrop, .drawer-backdrop, .dialog {
+    transition-duration: var(--dur-panel) !important;
+    transition-property: opacity !important;
+  }
+  .dialog { transform: none !important; }
+  @starting-style {
+    .dialog { transform: none; }
+    .drawer { transform: translateX(0); }   /* 서랍은 이동이 본체라 페이드 대상이 아니다 */
+  }
 }
 
 /* ==========================================================================

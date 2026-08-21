@@ -11,7 +11,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { makeLogger } from '../lib/log.mjs';
-import { listPublishedSlugs, parseDoc } from '../crosspub/lib.mjs';
+import { listPublishedSlugs, parseDoc } from '../lib/published-doc.mjs';
 import { loadShortsConfig, loadIndex, isMainModule } from './lib.mjs';
 
 const log = makeLogger('shorts/select');

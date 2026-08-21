@@ -15,6 +15,7 @@ import { appendAudit, ACTIONS }                   from '../audit/append.mjs';
 import { appendRecord }                           from './store-supabase.mjs';
 import { makeLogger }                             from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('hub/commands');
 
 // ─── 화이트리스트 ─────────────────────────────────────────────────────────────
@@ -236,7 +237,7 @@ export function listSafeCommands() {
 //   node commands.mjs rerun last
 //   node commands.mjs list
 
-if (process.argv[1] && process.argv[1].endsWith('commands.mjs')) {
+if (isMainModule(import.meta.url)) {
   const [, , type, arg1, arg2] = process.argv;
 
   if (!type || type === 'list') {

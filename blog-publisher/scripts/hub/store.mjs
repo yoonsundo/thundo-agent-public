@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { paths } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('hub/store');
 
 /** 창고가 다루는 레코드 종류 */
@@ -121,7 +122,7 @@ export function latest(type) {
 }
 
 // ─── CLI (디버그) ─────────────────────────────────────────────────────────────
-if (process.argv[1] && process.argv[1].endsWith('store.mjs')) {
+if (isMainModule(import.meta.url)) {
   const cmd = process.argv[2] || 'timeline';
   if (cmd === 'timeline') {
     console.log(JSON.stringify(timeline({ limit: 20 }), null, 2));

@@ -1,12 +1,14 @@
 'use client';
 
 import Link from 'next/link';
+import AgentAvatar from '@/components/ui/AgentAvatar';
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { BookOpen, Link2, Mail, MapPin } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { navItemsFor } from '@/lib/nav';
 import Empty from '@/components/state/Empty';
+import { useReveal } from '@/hooks/useReveal';
 
 export interface Stat {
   label: string;
@@ -47,10 +49,29 @@ export interface PopularPost {
   views?: number;
 }
 
+/** 홈 좌측 열을 채우는 최근 영상(유튜브 쇼츠). 서버가 이미 활성분만 걸러 넘긴다. */
+export interface HomeVideo {
+  youtube_id: string;
+  title: string;
+  youtube_url: string;
+  thumbnail_url: string | null;
+}
+
+/** 홈 좌측 열의 에이전트 팀 미리보기. 전체 목록은 `/agents` 에 있다. */
+export interface HomeAgent {
+  id: string;
+  name: string;
+  role: string;
+  /** DB agents.image_url — 아바타의 단일 출처. 관리자에서 바꾸면 여기도 함께 바뀐다. */
+  image_url?: string | null;
+}
+
 interface Props {
   profile: Profile;
   stats: Stat[];
   popularPosts: PopularPost[];
+  videos: HomeVideo[];
+  agents: HomeAgent[];
 }
 
 /**
@@ -96,7 +117,7 @@ function SocialIcon({ icon }: { icon: Social['icon'] }) {
   );
 }
 
-export default function ProjectsDashboard({ profile, stats, popularPosts }: Props) {
+export default function ProjectsDashboard({ profile, stats, popularPosts, videos, agents }: Props) {
   const { data: session, status } = useSession();
   const isLoggedIn = status === 'authenticated';
   const isAdmin = session?.user?.role === 'admin';
@@ -105,6 +126,9 @@ export default function ProjectsDashboard({ profile, stats, popularPosts }: Prop
   const navItems = navItemsFor({ isLoggedIn, isAdmin });
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
   const viewsFmt = new Intl.NumberFormat('ko-KR');
+
+  // 스크롤 진입 — 섹션 개수가 바뀌면 대상도 다시 잡는다.
+  useReveal([videos.length, agents.length, popularPosts.length]);
 
   return (
     <div className="container" style={{ paddingBlock: 'var(--space-8)' }}>
@@ -119,9 +143,13 @@ export default function ProjectsDashboard({ profile, stats, popularPosts }: Prop
         </div>
       </div>
 
-      <div className="grid-3">
+      {/* 지표 4칸은 `.grid-3` 이 아니라 `.grid-auto` 를 쓴다(DESIGN.md §11.1).
+          키트 `.grid-2/3/4` 는 900px 이하에서 **1열로 붕괴**해 폰에서 카드 4장이
+          세로로 길게 쌓인다(iPhone 13 실측). auto-fit 은 최소폭(150px)이 허용하는 만큼
+          채우므로 좁은 화면에서도 2열을 유지하고 넓은 화면에선 한 줄로 모인다. */}
+      <div className="grid-auto">
         {stats.map((stat) => (
-          <div className="stat" key={stat.label}>
+          <div className="stat reveal" key={stat.label}>
             <span className="stat-label">{stat.label}</span>
             <span className="stat-value">{stat.value}</span>
             {stat.hint && <span className="card-meta">{stat.hint}</span>}
@@ -136,7 +164,7 @@ export default function ProjectsDashboard({ profile, stats, popularPosts }: Prop
           {/* 소개 문단·대표 프로젝트 카드 제거(2026-08-06) → 그 자리의 방문자 Q&A 도
               메인에서 내림(2026-08-07 사용자 결정). 화면은 /admin/site-guide 에만 있다.
               컴포넌트와 /api/site-chat 은 그대로 살아 있으므로 되돌리려면 여기 한 줄이면 된다. */}
-          <div className="card">
+          <div className="card reveal">
             <div className="section-head">
               <h4>인기 블로그</h4>
               <div className="spacer" />
@@ -170,20 +198,75 @@ export default function ProjectsDashboard({ profile, stats, popularPosts }: Prop
               </div>
             )}
           </div>
+
+          {/* 최근 영상 — 좌측 열이 인기글 5개로 끝나 화면 절반이 비어 있었다(1440px 실측).
+              우측 사이드바(프로필+메뉴+기술스택)가 훨씬 길어 좌우 높이가 크게 어긋났다.
+              이미 있는 데이터를 끌어와 채운다. 없으면 섹션 자체를 렌더하지 않는다. */}
+          {videos.length > 0 && (
+            <div className="card reveal">
+              <div className="section-head">
+                <h4>최근 영상</h4>
+                <div className="spacer" />
+                <Link className="text-muted" href="/videos">전체 보기</Link>
+              </div>
+              <div className="grid-auto">
+                {videos.map((v) => (
+                  <a
+                    key={v.youtube_id}
+                    className="card-link stack-2"
+                    href={v.youtube_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {v.thumbnail_url && (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={v.thumbnail_url}
+                        alt=""
+                        loading="lazy"
+                        className="video-thumb"
+                      />
+                    )}
+                    <span className="card-title">{v.title}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 에이전트 팀 미리보기 — 이 사이트의 정체성이 '에이전트가 굴리는 파이프라인'인데
+              홈에서 그 존재가 전혀 안 보였다. 전체 소개는 /agents 에 있다. */}
+          {agents.length > 0 && (
+            <div className="card card-quiet reveal">
+              <div className="section-head">
+                <h4>에이전트 팀</h4>
+                <div className="spacer" />
+                <Link className="text-muted" href="/agents">전체 보기</Link>
+              </div>
+              <div className="agent-grid">
+                {agents.map((a) => (
+                  <div className="agent-chip" key={a.id}>
+                    <AgentAvatar id={a.id} name={a.name} imageUrl={a.image_url} sizeClass="" />
+                    <span className="text-ellipsis">
+                      <span className="card-title">{a.name}</span>
+                      <span className="card-meta">{a.role}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <aside className="stack-6">
           <div className="card">
-            <div className="avatar avatar-xl" style={{ overflow: 'hidden' }}>
-              <img
-                src={profile.avatar}
-                alt={profile.name}
-                width={104}
-                height={104}
-                loading="eager"
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-            </div>
+            {/* 글자 아바타 — 에이전트 소개 화면과 같은 방식(`avatar-neutral` + 이름 첫 글자).
+                기존 `/profile.png` 은 스톡 사이트 화면 캡처라 투명 격자·워터마크·뒤로가기 버튼·
+                마우스 커서가 그대로 구워져 있었다(2026-08-19 확인). 사이트 전체가 이미 글자
+                아바타를 쓰므로 이쪽이 일관되고 라이선스 문제도 없다. */}
+            <span className="avatar avatar-xl avatar-neutral" aria-hidden="true">
+              {profile.name.slice(0, 1)}
+            </span>
 
             <div className="stack-2">
               <span className="card-title">{profile.name}</span>
@@ -191,7 +274,13 @@ export default function ProjectsDashboard({ profile, stats, popularPosts }: Prop
               <p className="card-body">{profile.title}</p>
             </div>
 
-            {profile.available && <span className="tag tag-success">협업 가능</span>}
+            {/* 배지는 내용만큼만 차지해야 한다 — `.card` 가 flex 열이라 그냥 두면
+                자식이 교차축으로 늘어나 사이드바 전체 폭을 먹는다(실측). */}
+            {profile.available && (
+              <div className="row">
+                <span className="tag tag-success">협업 가능</span>
+              </div>
+            )}
 
             {profile.location && (
               <div className="card-meta">
@@ -238,7 +327,8 @@ export default function ProjectsDashboard({ profile, stats, popularPosts }: Prop
             </div>
           </div>
 
-          <div className="card">
+          {/* 부수 정보는 눕힌다 — 카드가 전부 흰색으로 뜨면 위계가 다시 사라진다. */}
+          <div className="card card-quiet">
             <span className="card-title">기술 스택</span>
             <div className="row" style={{ flexWrap: 'wrap' }}>
               {profile.skills.map((skill) => (

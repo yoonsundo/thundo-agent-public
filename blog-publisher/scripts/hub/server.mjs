@@ -22,6 +22,7 @@ import { generateBriefing }                 from './briefing.mjs';
 import { env }                              from '../lib/config.mjs';
 import { makeLogger }                       from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('hub/server');
 
 // ─── 토큰 인증 ────────────────────────────────────────────────────────────────
@@ -41,6 +42,15 @@ function checkToken(headers, searchParams) {
   const fromQuery  = searchParams.get('token') ?? '';
   return fromHeader === required || fromQuery === required;
 }
+
+// ─── 읽기(GET) 인증 요구 여부 ────────────────────────────────────────────────
+//
+// GET 라우트는 원래 토큰이 필요 없다(로컬 대시보드 전제). 그런데 비루프백으로 바인딩하면 그 전제가
+// 깨진다 — 같은 네트워크의 누구나 타임라인·브리핑·명령목록을 읽는다. 예전엔 기동 가드가 "토큰이
+// 있으면 안전" 처럼 말했지만 **토큰은 POST 만 지킨다**(2026-08-19 리뷰 지적). 그래서 외부 바인딩일
+// 때는 GET 에도 토큰을 요구한다. 루프백 기본값에서는 종전과 동일하게 무인증으로 편하게 쓴다.
+let requireAuthForReads = false;
+export function setRequireAuthForReads(v) { requireAuthForReads = !!v; }
 
 // ─── 순수 라우팅 함수 (단위 테스트 가능) ─────────────────────────────────────
 
@@ -71,6 +81,11 @@ export async function route(method, pathname, body, headers) {
   // ── GET 엔드포인트 ──────────────────────────────────────────────────────────
 
   if (method === 'GET') {
+    // 외부 바인딩 시에만 읽기도 토큰 필요(위 requireAuthForReads 주석 참고).
+    if (requireAuthForReads && !checkToken(headers, params)) {
+      return { status: 401, json: { error: 'unauthorized' } };
+    }
+
     if (path === '/api/briefings') {
       const records = await readRecords('briefing', { limit: 20 });
       return { status: 200, json: records };
@@ -332,6 +347,13 @@ export function renderDashboard() {
   }
 
   // ─── 결과 표시 ──────────────────────────────────────────────────────────────
+  /** HTML 이스케이프 — innerHTML 조립부 전용(레코드 텍스트는 신뢰 불가 입력). */
+  function esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
   function showResult(id, data, isErr) {
     const el = document.getElementById(id);
     el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
@@ -388,19 +410,23 @@ export function renderDashboard() {
         ul.innerHTML = '<li><span class="tl-body">기록 없음</span></li>';
         return;
       }
+      // esc 필수(2026-08-19): 타임라인 레코드는 에이전트 산출물·봇 메시지에서 오고, 그 원재료는
+      // Reddit/HN 수집물과 LLM 출력이다. 이스케이프 없이 innerHTML 에 넣으면 레코드 한 건으로
+      // 대시보드에서 스크립트가 실행된다 — 같은 화면의 토큰 입력값을 읽어 POST 명령(파이프라인
+      // 중단·주제 승인)까지 낼 수 있으므로 단순 표시 문제가 아니다.
       ul.innerHTML = list.map(r => {
         const ts   = r.ts ? r.ts.replace('T',' ').slice(0,19) : '';
         const type = r.type ?? '?';
         const body = r.answer ?? r.question ?? r.kind ?? r.status ?? JSON.stringify(r).slice(0,80);
         return \`<li>
-          <span class="tl-ts">\${ts}</span>
-          <span class="tl-type">\${type}</span>
-          <span class="tl-body">\${body}</span>
+          <span class="tl-ts">\${esc(ts)}</span>
+          <span class="tl-type">\${esc(type)}</span>
+          <span class="tl-body">\${esc(body)}</span>
         </li>\`;
       }).join('');
     } catch (e) {
       document.getElementById('timeline-list').innerHTML =
-        '<li><span class="tl-body">로드 실패: ' + e.message + '</span></li>';
+        '<li><span class="tl-body">로드 실패: ' + esc(e.message) + '</span></li>';
     }
   }
 
@@ -552,19 +578,41 @@ export function createHubServer() {
  * startServer(port) → http.Server (listening)
  * port 생략 시 HUB_PORT 환경변수, 기본 8787.
  */
-export function startServer(port) {
+export function startServer(port, host) {
   const p = port ?? (Number(env('HUB_PORT', '8787')) || 8787);
+  // 바인딩 주소(2026-08-19 보안 조치): 기본 루프백.
+  // 예전엔 listen(port) 만 호출해 **0.0.0.0(전 인터페이스)** 에 열렸다 — 로그만 "localhost" 라고
+  // 찍혀서 로컬 전용처럼 보였다. GET 라우트는 설계상 토큰이 필요 없으므로(타임라인·레코드·브리핑
+  // 전부 조회 가능) 같은 네트워크(WSL2 라면 윈도우 호스트·LAN)의 누구나 운영 데이터를 읽을 수 있었다.
+  const h = host ?? env('HUB_HOST', '127.0.0.1');
+  const loopback = h === '127.0.0.1' || h === 'localhost' || h === '::1';
+  // 외부에 노출할 의도라면(HUB_HOST 를 명시적으로 바꾼 경우) 토큰 없이는 기동을 거부한다.
+  // 토큰 미설정 시 checkToken 이 통과로 fail-open 하므로, 그 조합은 무인증 공개와 같다.
+  if (!loopback && !env('HUB_DASHBOARD_TOKEN', '')) {
+    throw new Error(
+      `HUB_HOST=${h} (비루프백) 로 기동하려면 HUB_DASHBOARD_TOKEN 이 필요하다 — ` +
+      '토큰 없이 외부 바인딩하면 대시보드·API 가 무인증으로 공개된다.'
+    );
+  }
+  // 외부 바인딩이면 읽기(GET)도 토큰을 요구한다. 토큰은 원래 POST 만 지켰으므로, 이걸 켜지 않으면
+  // "토큰 설정했으니 안전" 이 거짓이 된다(타임라인·브리핑이 그대로 열림).
+  setRequireAuthForReads(!loopback);
   const server = createHubServer();
-  server.listen(p, () => {
-    log.info(`허브 대시보드 기동 완료 — http://localhost:${p}`);
-    console.log(`[hub/server] 대시보드: http://localhost:${p}`);
+  server.listen(p, h, () => {
+    log.info(`허브 대시보드 기동 완료 — http://${h}:${p}`);
+    console.log(`[hub/server] 대시보드: http://${h}:${p}`);
   });
   return server;
 }
 
 // ─── CLI 진입점 ──────────────────────────────────────────────────────────────
-const isCLI = process.argv[1] && process.argv[1].endsWith('server.mjs');
+const isCLI = isMainModule(import.meta.url);
 if (isCLI) {
   const port = Number(env('HUB_PORT', '8787')) || 8787;
-  startServer(port);
+  try {
+    startServer(port);
+  } catch (e) {
+    console.error(`[hub/server] 기동 거부: ${e.message}`);
+    process.exit(2);
+  }
 }

@@ -29,6 +29,7 @@ import { mockImageRaster }          from '../lib/mock-llm.mjs';
 import { paths, isMock, env }       from '../lib/config.mjs';
 import { makeLogger }               from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('gemini-designer');
 
 // ─── CLI 바이너리 해석 ───────────────────────────────────────────────────────
@@ -180,7 +181,7 @@ export async function designGemini(topic, draft, opts = {}) {
 }
 
 // CLI 직접 실행 (디버그)
-if (process.argv[1] && process.argv[1].endsWith('gemini-designer.mjs')) {
+if (isMainModule(import.meta.url)) {
   const title = process.argv[2] || 'AI 자동화로 블로그 발행 파이프라인 만들기';
   designGemini({ title, id: 'cli' }, { title, slug: 'gemini-cli-test' })
     .then(c => console.log(JSON.stringify({ by: c?.by, format: c?.format, mock: c?.meta?.mock, engine: c?.meta?.engine, path: c?.path }, null, 2)));

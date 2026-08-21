@@ -1,8 +1,8 @@
 /**
  * lib/browser-render.mjs — headless chromium 렌더 공용 조각 (계획 §3.8, R3-lite)
  *
- * 기존 3개 사본(shorts/slides.mjs:19, crosspub/browser/context.mjs:21,
- * render/screenshot.mjs:30)의 이관 대상. 이관은 각 파이프라인의 별도 스토리 —
+ * 기존 사본(shorts/slides.mjs:19, render/screenshot.mjs:30)의 이관 대상.
+ * (세 번째 사본이던 crosspub/browser/context.mjs 는 2026-08-12 교차발행 폐지로 삭제됨.) 이관은 각 파이프라인의 별도 스토리 —
  * 이 모듈이 첫 단계다. 현재 소비자는 `cardnews/render.mjs` 하나뿐이며,
  * 위 3개 파일은 이 스토리에서 **수정하지 않는다**(diff 0줄).
  */

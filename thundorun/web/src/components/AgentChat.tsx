@@ -12,6 +12,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import AgentAvatar from '@/components/ui/AgentAvatar';
 import { ArrowDown, ArrowLeft, Bot, Menu, MessagesSquare, Plus, X } from 'lucide-react';
 import AssistantMarkdown from './AssistantMarkdown';
 import Empty from '@/components/state/Empty';
@@ -26,6 +27,8 @@ interface Agent {
   role: string;
   /** 서버 호환 필드 — UI 에 렌더하지 않는다(이모지 금지). */
   emoji?: string;
+  /** DB agents.image_url — 아바타의 단일 출처. */
+  image_url?: string | null;
 }
 
 interface ChatSession {
@@ -62,19 +65,22 @@ type LoadState = 'loading' | 'ready' | 'error';
 
 // ─── 에이전트 표시(이니셜) ─────────────────────────────────────────────────────
 /** 에이전트 이니셜 — `lion` -> `LI`. 이모지 대체(§규칙 8). */
-function agentInitials(agentId?: string | null): string {
-  if (!agentId) return '';
-  return agentId.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase();
-}
-
-/** 아바타 — 에이전트는 이니셜, 미지정이면 lucide Bot. */
-function AgentAvatar({ agentId }: { agentId?: string | null }) {
-  const initials = agentInitials(agentId);
-  return (
-    <span className="avatar avatar-neutral" aria-hidden="true">
-      {initials || <Bot size={16} />}
-    </span>
-  );
+/**
+ * 아바타 — 소개 화면·홈과 **같은 얼굴**을 쓴다(단일 출처는 DB image_url).
+ * agents 목록에서 그 에이전트를 찾아 초상을 넘기고, 못 찾으면 공용 컴포넌트가
+ * 역할 아이콘 → 모노그램으로 떨어뜨린다. agent_id 자체가 없으면 사람이 아니라 시스템
+ * 메시지이므로 lucide Bot 을 쓴다.
+ */
+function ChatAvatar({ agentId, agents }: { agentId?: string | null; agents: Agent[] }) {
+  if (!agentId) {
+    return (
+      <span className="avatar avatar-neutral" aria-hidden="true">
+        <Bot size={16} />
+      </span>
+    );
+  }
+  const a = agents.find((x) => x.id === agentId);
+  return <AgentAvatar id={agentId} name={a?.name ?? agentId} imageUrl={a?.image_url} sizeClass="" />;
 }
 
 // 복사 버튼·마크다운 렌더러는 AssistantMarkdown.tsx 로 추출(오케 콘솔과 공용, 2026-07-09).
@@ -98,7 +104,7 @@ function MessageBubble({ message, agents }: { message: ChatMessage; agents: Agen
   return (
     <div className="stack-2">
       <div className="row">
-        <AgentAvatar agentId={message.agent_id} />
+        <ChatAvatar agentId={message.agent_id} agents={agents} />
         <span className="kicker">{label}</span>
       </div>
       <div className="bubble bubble-agent">

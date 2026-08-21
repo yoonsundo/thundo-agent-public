@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { paths, loadBudget, env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
 const log = makeLogger('watchdog/budget');
 
 // ─── 경로 ─────────────────────────────────────────────────────────────────────
@@ -219,7 +220,7 @@ export function getBudgetState(date) {
 }
 
 // CLI
-if (process.argv[1] && process.argv[1].endsWith('budget.mjs')) {
+if (isMainModule(import.meta.url)) {
   const cmd = process.argv[2] || 'check';
   if (cmd === 'check') {
     console.log(JSON.stringify(checkBudget(), null, 2));

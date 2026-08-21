@@ -91,9 +91,13 @@ async function testAlertOncePerDay(tmp) {
   const calls = [];
   const stubNotifier = async (event, payload) => { calls.push({ event, payload }); return { telegram: 'sent', discord: 'sent' }; };
 
+  // ⚠ hasApiKey 를 명시한다. 안 주면 실행 환경의 .env 를 읽어 분기가 갈리고,
+  //    키가 생기는 순간(2026-08-21 실제로 발생) "YOUTUBE_API_KEY 를 추가하라"는 문구가
+  //    사라져 이 단언이 깨진다 — 코드가 아니라 테스트가 환경에 의존했던 것이다.
+  //    여기서 검증하려는 건 **키가 없을 때의 안내문**이므로 false 로 고정한다.
   const first = await mod.alertBlocked({
     reason: 'videos.list HTTP 403: insufficient authentication scopes',
-    uploads: 47, notifier: stubNotifier,
+    uploads: 47, notifier: stubNotifier, hasApiKey: false,
   });
   const body = calls[0] ? `${calls[0].payload.reason}\n${calls[0].payload.details}` : '';
   const hasCause = /403|스코프|scope/i.test(body);
@@ -255,7 +259,7 @@ async function testChannelsList(mod) {
     };
   };
   try {
-    const c = await mod.fetchChannelStats({ token: 'fake-oauth-token', channelId: 'UC_TEST' });
+    const c = await mod.fetchChannelStats({ token: 'fake-oauth-token', channelId: 'UC_TEST' });   // secret-scan: allow 테스트 스텁 문자열(실 토큰 아님)
     const keyFirst = urls[0].includes('key=TEST_KEY') && urls[0].includes('id=UC_TEST');
     (c.subscribers === 141 && c.views === 24000 && c.videos === 47 && c.channel_id === 'UC_TEST' && keyFirst && urls.length === 1)
       ? pass('channels.list: subscriberCount 141 파싱(API 키 경로 우선, 1회 호출)')

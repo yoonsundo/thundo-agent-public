@@ -647,7 +647,8 @@ function DetailDialog({ id, onClose, onChanged }: { id: string; onClose: () => v
               {inProgress && <span className="tag tag-info">진행 중 — 상태 변경 잠금</span>}
             </div>
             <div className="progress" data-tone={pct === 100 ? 'success' : undefined}>
-              <span style={{ width: `${pct}%` }} />
+              {/* 채움은 width 가 아니라 transform — 레이아웃 재계산 없이 합성만 한다. */}
+              <span style={{ transform: `translateX(${pct - 100}%)` }} />
             </div>
           </div>
         )}

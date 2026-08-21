@@ -25,6 +25,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { mdToHtml, isLikelyHtml } from '../lib/md-to-html.mjs';
 
+
+import { runGateCli, GateError } from './lib/gate-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 // ─── 허용 시맨틱 태그 (홈 prose-invert 가 렌더하는 집합) ──────────────────────────
 const ALLOWED_TAGS = new Set([
   'h2', 'h3', 'h4', 'p', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
@@ -150,37 +153,38 @@ function analyze(html) {
 }
 
 // ─── 진입점 ──────────────────────────────────────────────────────────────────
-function main() {
-  const filePath = process.argv[2];
-  if (!filePath) {
-    process.stderr.write('Usage: check-render-fit.mjs <published.html|draft.md>\n');
-    process.exit(2);
-  }
+export function evaluate(draftPath) {
+  const filePath = draftPath;
 
   let raw;
   try {
     raw = readFileSync(resolve(filePath), 'utf8');
   } catch (e) {
-    process.stderr.write(`check-render-fit: 파일 읽기 실패: ${e.message}\n`);
-    process.exit(2);
+    throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e });
   }
 
   const { html, source } = toHtml(raw);
   if (!html || !html.trim()) {
-    process.stdout.write(JSON.stringify({
+    return {
       gate: 'render-fit',
       pass: false,
       reason: '렌더 콘텐츠가 비어 있음(변환 결과 없음)',
       evidence: { source, h2_count: 0, p_count: 0 },
-    }) + '\n');
-    process.exit(1);
+    };
   }
 
   const result = analyze(html);
   result.evidence.source = source;
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(result.pass ? 0 : 1);
+  return result;
 }
 
-main();
+// CLI 로 직접 실행될 때만 돈다. 가드가 없으면 run-all-gates 가 import 하는 순간
+// 이 게이트가 stdout 을 쓰고 process.exit 해 버린다(2026-08-21 실측).
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'render-fit',
+    evaluate,
+    usage: 'Usage: check-render-fit.mjs <published.html|draft.md>',
+  });
+}

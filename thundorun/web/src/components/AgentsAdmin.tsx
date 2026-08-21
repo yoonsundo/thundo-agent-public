@@ -8,6 +8,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import AgentAvatar from '@/components/ui/AgentAvatar';
 import { Check, Pencil, Plus, Trash2 } from 'lucide-react';
 import ConfirmDialog from '@/app/admin/ConfirmDialog';
 import Empty from '@/components/state/Empty';
@@ -32,10 +33,6 @@ interface AgentRow {
 }
 
 /** 에이전트 식별 아바타 이니셜 — 이모지 대체. */
-function initials(id: string): string {
-  return id.slice(0, 2).toUpperCase();
-}
-
 const EMPTY: AgentRow = {
   id: '', name: '', role: '', description: '', image_url: '', emoji: '', sort_order: 0, active: true,
 };
@@ -198,14 +195,41 @@ export default function AgentsAdmin({ embedded = false }: { embedded?: boolean }
             />
           </div>
           <div className="field">
-            <label htmlFor="ag-img">이미지 URL (없으면 비움)</label>
-            <input
-              id="ag-img"
-              className="input"
-              value={form.image_url ?? ''}
-              onChange={(e) => setForm({ ...form, image_url: e.target.value })}
-              placeholder="https://..."
-            />
+            <label htmlFor="ag-img">아바타 이미지</label>
+            {/* 아바타의 단일 출처는 이 값이다 — 소개 카드·홈 미리보기·흐름도·대화가 모두 이걸 읽는다.
+                비우면 역할 아이콘, 그다음 모노그램 순으로 떨어지므로 빈 원이 뜨는 일은 없다. */}
+            <div className="row" style={{ alignItems: 'center', gap: 'var(--space-3)' }}>
+              <AgentAvatar id={form.id} name={form.name || form.id} imageUrl={form.image_url} />
+              <div className="stack-2" style={{ flex: 1, minWidth: 0 }}>
+                <input
+                  id="ag-img"
+                  className="input"
+                  value={form.image_url ?? ''}
+                  onChange={(e) => setForm({ ...form, image_url: e.target.value })}
+                  placeholder="/agent-portraits/lion.jpg 또는 https://..."
+                />
+                <div className="row" style={{ gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setForm({ ...form, image_url: `/agent-portraits/${form.id}.jpg` })}
+                    disabled={!form.id}
+                    title="이 에이전트 id 로 등록된 마스코트 초상을 쓴다"
+                  >
+                    기본 초상 사용
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setForm({ ...form, image_url: '' })}
+                    disabled={!form.image_url}
+                    title="비우면 역할 아이콘, 그다음 모노그램으로 떨어진다"
+                  >
+                    이미지 삭제
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -274,9 +298,10 @@ export default function AgentsAdmin({ embedded = false }: { embedded?: boolean }
                   {sorted.map((a) => (
                     <tr key={a.id} data-selected={editing && form.id === a.id}>
                       <td>
-                        {/* 이모지 대신 이니셜 아바타로 식별(§12.9) */}
+                        {/* 아바타는 DB image_url 이 단일 출처 — 아래 폼에서 바꾸면 여기도 바뀐다.
+                            (이모지는 쓰지 않는다 §12.3 · 초상/역할아이콘/모노그램 순 폴백) */}
                         <span className="row">
-                          <span className="avatar avatar-neutral">{initials(a.id)}</span>
+                          <AgentAvatar id={a.id} name={a.name} imageUrl={a.image_url} sizeClass="" />
                           {a.name}
                         </span>
                       </td>

@@ -33,6 +33,9 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, join, sep } from 'node:path';
 import { ORG_NAMES_RE } from './check-sources.mjs';
 
+import { isMainModule } from '../lib/main-module.mjs';
+
+import { runGateCli, GateError } from './lib/gate-cli.mjs';
 const GATE = 'source-fidelity';
 
 // ── 임계 초기값 (캘리브레이션 드라이런으로 확정 — ralplan v6 M6) ───────────────
@@ -125,6 +128,10 @@ function loadJson(p) {
 
 function loadConfig() {
   try {
+    // ⚠ **의도적인 cwd 상대경로다.** 절대경로로 바꾸지 마라 —
+    //   scripts/test/source-fidelity.test.mjs 의 [6] 이 격리된 cwd 에 자체
+    //   config/source-pack.json 을 두고 shadow/enforce 분기를 검증한다.
+    //   운영 cwd 는 항상 저장소 루트라(크론·npm run gate) 실제 위험은 없다.
     const c = JSON.parse(readFileSync('config/source-pack.json', 'utf8'));
     return { enforce: c.gate_enforce === true };
   } catch { return { enforce: false }; }   // 부재·손상 → shadow 로 degrade(발행 차단 금지)
@@ -178,13 +185,10 @@ export function judge(raw, draftPath) {
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
-function main() {
-  const draftPath = process.argv[2];
-  if (!draftPath) { process.stderr.write('Usage: check-source-fidelity.mjs <draft.md>\n'); process.exit(2); }
-
+export function evaluate(draftPath) {
   let raw;
   try { raw = readFileSync(resolve(draftPath), 'utf8'); }
-  catch (e) { process.stderr.write(`check-source-fidelity: 파일 읽기 실패: ${e.message}\n`); process.exit(2); }
+  catch (e) { throw new GateError(`파일 읽기 실패: ${e.message}`, { cause: e }); }
 
   let verdict;
   try { verdict = judge(raw, draftPath); }
@@ -199,10 +203,12 @@ function main() {
     : { gate: GATE, pass: true, reason: verdict.pass ? verdict.reason : `shadow(미집행): ${verdict.reason}`,
         evidence: { ...verdict.evidence, shadow_verdict: verdict.pass ? 'pass' : 'fail' } };
 
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(result.pass ? 0 : 1);
+  return result;
 }
 
-if (process.argv[1] && process.argv[1].endsWith('check-source-fidelity.mjs')) {
-  main();
+if (isMainModule(import.meta.url)) {
+  await runGateCli({
+    gate: 'source-fidelity',
+    evaluate,
+  });
 }

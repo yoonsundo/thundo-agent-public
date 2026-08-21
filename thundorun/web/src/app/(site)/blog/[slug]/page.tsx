@@ -192,12 +192,11 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
         </div>
 
         <div className="stack-6">
-          {/* 인트로 요약 콜아웃 (description 있을 때만) */}
-          {post.description && (
-            <aside aria-label="요약" className="card card-outline">
-              {post.description}
-            </aside>
-          )}
+          {/* 인트로 요약 콜아웃은 제거했다(2026-08-19).
+              `description` 이 본문 첫 문단을 그대로 잘라 만든 값이라, 화면에서 같은 문장이
+              연속으로 두 번 나왔다(표본 5편 전부 중복 — 라이브 실측). 독자가 방금 읽은 문장을
+              다시 읽게 되고 도입부가 두 배로 길어진다. 첫 문단이 이미 도입부 역할을 하므로 상자를 뺀다.
+              ⚠ `description` 자체는 그대로 둔다 — metadata·OG·JSON-LD 에 계속 쓰인다(:34,:39,:46,:54,:91). */}
 
           {/* 이 글의 순서 (헤딩 자동 추출, H3 는 H2 아래 중첩) */}
           {tocTree.length > 0 && (
