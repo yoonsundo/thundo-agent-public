@@ -14,7 +14,7 @@
  *
  * exit 0 = 전체 통과 / exit 1 = 1개 이상 실패.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -38,7 +38,10 @@ const eq = (label, got, want) => ok(label, got === want, `got=${JSON.stringify(g
  * 마이그레이션은 alter 로 들어오므로 create 만 보면 새 컬럼을 놓친다.
  */
 function sqlColumns() {
+  // ⚠ 사이블링 체크아웃(repo/thundorun)에 의존한다. 이 레포만 클론한 환경·CI·공개 미러에서는
+  //   파일이 없다 → null 을 돌려주고 ①만 건너뛴다. 조용히 통과시키지는 않는다(아래에서 SKIP 출력).
   const sqlPath = resolve(__dirname, '../../../repo/thundorun/web/supabase/cardnews_posts.sql');
+  if (!existsSync(sqlPath)) return null;
   const sql = readFileSync(sqlPath, 'utf8');
   const cols = new Set();
   const create = sql.match(/create table if not exists public\.cardnews_posts \(([\s\S]*?)\n\);/);
@@ -70,16 +73,25 @@ const POST = {
   generator: 'codex',
   generator_effective: 'codex',
   published_at: '2026-08-01T10:00:00.000Z',
+  bgm_suggestions: [
+    { title: 'River Flows in You', artist: 'Yiruma', mood: '잔잔한 피아노' },
+    { title: 'Gymnopédie No.1', artist: 'Erik Satie', mood: '고요' },
+    { title: 'Clair de Lune', artist: 'Debussy', mood: '' },
+  ],
 };
 
 // ── ① 컬럼 정합 ──────────────────────────────────────────────────────────────
 console.log('\n[1] 행 매핑 — SQL 컬럼과 정확히 일치');
 {
   const row = toRow(POST);
-  const got = Object.keys(row).sort();
-  const want = [...SQL_COLUMNS].sort();
-  ok('🔴 컬럼 집합이 SQL 과 동일', JSON.stringify(got) === JSON.stringify(want),
-    `여분=${got.filter(k => !want.includes(k))} 누락=${want.filter(k => !got.includes(k))}`);
+  if (SQL_COLUMNS === null) {
+    console.log('  [SKIP] 컬럼 정합 — repo/thundorun 체크아웃이 없어 SQL 을 읽지 못했다');
+  } else {
+    const got = Object.keys(row).sort();
+    const want = [...SQL_COLUMNS].sort();
+    ok('🔴 컬럼 집합이 SQL 과 동일', JSON.stringify(got) === JSON.stringify(want),
+      `여분=${got.filter(k => !want.includes(k))} 누락=${want.filter(k => !got.includes(k))}`);
+  }
 
   eq('post_id', row.post_id, POST.post_id);
   eq('media_id 는 published_media_id 에서 온다', row.media_id, POST.published_media_id);
@@ -87,6 +99,7 @@ console.log('\n[1] 행 매핑 — SQL 컬럼과 정확히 일치');
   eq('cover_url 은 첫 슬라이드', row.cover_url, 'https://cdn.example/01.jpg');
   eq('generator', row.generator, 'codex');
   eq('active 기본 true', row.active, true);
+  eq('BGM 추천 3곡이 실린다', row.bgm_suggestions.length, 3);
 }
 
 // ── ② 결측·형식이상 방어 ─────────────────────────────────────────────────────
@@ -101,6 +114,8 @@ console.log('\n[2] 결측·형식이상');
   const junk = toRow({ post_id: 'cn-y', public_url: ['ok', 42, null, ''], slide_sha256: 'not-an-array' });
   eq('URL 배열에서 비문자열은 걸러진다', junk.slide_urls.length, 1);
   eq('slide_sha256 이 배열이 아니면 빈 배열', junk.slide_sha256.length, 0);
+  eq('bgm_suggestions 이 배열이 아니면 빈 배열',
+    toRow({ post_id: 'cn-b', bgm_suggestions: 'junk' }).bgm_suggestions.length, 0);
 
   eq('post_id 없으면 행을 만들지 않는다', toRow({}), null);
   eq('post 자체가 없으면 null', toRow(null), null);

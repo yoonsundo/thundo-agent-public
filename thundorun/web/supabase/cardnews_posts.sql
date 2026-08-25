@@ -66,3 +66,13 @@ create index if not exists cardnews_posts_status_idx on public.cardnews_posts (s
 
 comment on column public.cardnews_posts.status is
   'ready=제작 완료·인스타 미게시(관리자 화면에만 보임) / published=관리자가 인스타에 올림(공개 /cardnews 노출). active 는 발행 뒤 숨김 스위치라 역할이 다르다.';
+
+-- ── BGM 추천 (2026-08-24 반자동 발행 보강) ─────────────────────────────────────
+-- 인스타 음악은 앱 안에서만 붙일 수 있어, 파이프라인이 카드 감정에 맞는 곡 3개를
+-- 대본 단계에서 함께 생성해 저장한다. 관리자 화면이 이걸 보여주고 복사 버튼을 단다.
+-- 기존 행 backfill 불필요(반자동 전환 시점 행 0건) · 부재는 '[]' 로 균일하다.
+alter table public.cardnews_posts
+  add column if not exists bgm_suggestions jsonb not null default '[]'::jsonb;
+
+comment on column public.cardnews_posts.bgm_suggestions is
+  '관리자용 BGM 추천 3곡 [{title, artist, mood}] — 대본(script) 단계에서 LLM 이 캡션과 같은 호출로 생성. 공개 페이지는 쓰지 않는다.';

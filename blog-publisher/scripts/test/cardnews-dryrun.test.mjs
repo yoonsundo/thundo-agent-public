@@ -98,6 +98,14 @@ const SCRIPT = (() => {
   //    벤치마크 픽스처(`benchmark/cardnews/*`)는 인용 게이트 담당이 따로 소유하므로 여기서
   //    고치지 않고, **없을 때만** 최소 블록을 얹어 통합 경로가 계속 돌게 한다. 픽스처가 갱신되면
   //    이 보정은 자동으로 비활성이 된다(조건부).
+  // BGM 추천(2026-08-24) — 픽스처에 없으면 최소 3곡을 얹어 전파 경로를 통합으로 검증한다.
+  if (!s.bgm_suggestions) {
+    s.bgm_suggestions = [
+      { title: 'River Flows in You', artist: 'Yiruma', mood: '잔잔한 피아노' },
+      { title: 'Gymnopédie No.1', artist: 'Erik Satie', mood: '고요' },
+      { title: 'Clair de Lune', artist: 'Debussy', mood: '달빛' },
+    ];
+  }
   if (!s.quote) {
     s.quote = {
       text: '결국 독서만 한 즐거움은 없다고 나는 단언한다.',
@@ -321,6 +329,7 @@ eq('두 번 다 같은 post_id 라 DB 행은 하나', new Set(siteRows.map(r => 
   eq('1회차엔 media_id 가 없다(아직 안 올림)', ready?.media_id, null);
   ok('1회차에도 슬라이드는 있다 — 관리자가 올릴 대상이므로',
     Array.isArray(ready?.slide_urls) && ready.slide_urls.length > 0, String(ready?.slide_urls?.length));
+  eq('BGM 추천 3곡이 ready 행까지 전파된다(대본→flush→toRow)', ready?.bgm_suggestions?.length, 3);
 
   const row = siteRows[siteRows.length - 1];
   eq('최종 행은 published', row?.status, 'published');

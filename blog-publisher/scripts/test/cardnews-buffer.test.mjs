@@ -82,6 +82,30 @@ ok('7장 구조가 고정으로 명시된다', prompt.includes('= 정확히 7장
 ok('글자수 상한이 config 에서 온다', prompt.includes(`${CFG.cards.headline_max_chars}자 이내`));
 ok('힌트가 있으면 프롬프트에 실린다', sc.buildScriptPrompt(ITEM, CFG, '⚠ 직전 시도 위반').includes('⚠ 직전 시도 위반'));
 
+// ── BGM 추천 (2026-08-24 반자동 발행 보강) ──────────────────────────────────
+console.log('\n[BGM] 프롬프트 지시 + 정규화(비차단)');
+ok('프롬프트가 bgm_suggestions 3곡을 지시한다',
+  prompt.includes('bgm_suggestions') && prompt.includes('실재하는 곡 3개'));
+{
+  const three = [
+    { title: 'River Flows in You', artist: 'Yiruma', mood: '잔잔한 피아노' },
+    { title: 'Gymnopédie No.1', artist: 'Erik Satie', mood: '고요' },
+    { title: 'Merry Christmas Mr. Lawrence', artist: 'Ryuichi Sakamoto', mood: '' },
+  ];
+  const eqLen = (label, script, want) => eq(label, sc.normalizeBgmSuggestions(script).length, want);
+  eqLen('정상 3곡 → 3개 채택', { bgm_suggestions: three }, 3);
+  eq('공백 트림', sc.normalizeBgmSuggestions({ bgm_suggestions: [{ ...three[0], title: '  A  ' }, three[1], three[2]] })[0].title, 'A');
+  eq('mood 없으면 빈 문자열', sc.normalizeBgmSuggestions({ bgm_suggestions: three })[2].mood, '');
+  eqLen('2곡이면 전부 버림(계약=정확히 3)', { bgm_suggestions: three.slice(0, 2) }, 0);
+  eqLen('4곡이면 전부 버림', { bgm_suggestions: [...three, three[0]] }, 0);
+  eqLen('artist 누락 항목이 있으면 전부 버림', { bgm_suggestions: [three[0], three[1], { title: 'X' }] }, 0);
+  eqLen('title 이 비문자열이면 전부 버림', { bgm_suggestions: [{ title: 42, artist: 'A' }, three[1], three[2]] }, 0);
+  eqLen('필드 자체가 없으면 []', {}, 0);
+  eqLen('배열이 아니면 []', { bgm_suggestions: 'not-an-array' }, 0);
+  // 🔴 비차단 계약 — bgm 이 없어도 대본 검증은 통과한다(재생성 시도를 소모하지 않는다).
+  eq('bgm 없어도 validateScript 통과', sc.validateScript(goodScript(), CFG).ok, true);
+}
+
 // 소재가 그대로 전달되는가 — 작가가 인용·해설·전환 재료 없이 쓰면 밋밋한 총론으로 돌아간다.
 for (const [label, v] of [['문제', ITEM.problem], ['상황', ITEM.situation], ['인용', ITEM.quote_ko],
   ['해설 재료', ITEM.interpretation], ['전환 재료', ITEM.shift], ['보낼 사람', ITEM.audience]]) {

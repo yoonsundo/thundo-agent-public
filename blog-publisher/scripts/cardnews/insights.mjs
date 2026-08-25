@@ -200,6 +200,9 @@ export async function collectAll({ cfg, now = new Date(), fetchImpl = fetch, tok
 
   const posts = Object.values(idx || {}).filter(p => p && typeof p === 'object');
   const cap = Number(conf?.insights?.max_posts_per_run) || 0;
+  // ⚠ 2026-08-21 반자동 발행 전환 이후 **이 필터가 사실상 모든 글을 걸러낸다.** 관리자가 인스타
+  //   앱으로 직접 올리면 Graph API 를 거치지 않아 published_media_id 가 영원히 생기지 않는다.
+  //   즉 도달·저장률 수집은 무인 발행(`publish.enabled=true`)일 때만 동작한다 — 반자동을 택한 대가다.
   const targets = posts.filter(p => p.published_media_id);
   const skipped = posts.length - targets.length;          // 미발행·발행실패 글은 조용히 건너뛴다
   const slice = cap > 0 ? targets.slice(0, cap) : targets;

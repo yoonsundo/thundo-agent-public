@@ -12,7 +12,8 @@ create table if not exists public.board_approvals (
   team            text,
   target          text,
   target_type     text,
-  change          text,                      -- 무엇을 어떻게 바꾸자는 것인가(사람이 읽는 본문)
+  change          text,                      -- 무엇을 어떻게 바꾸자는 것인가(요지, 사람이 읽는 본문)
+  plan            text,                      -- 어떻게 바꿀 것인가(실행계획 — 화면이 요지와 나눠 보여준다)
   rationale       text,                      -- 왜
   expected_effect text,                      -- 무엇이 달라지는가
   value           jsonb,                     -- 설정 변경이면 바꿀 값
@@ -27,6 +28,12 @@ create table if not exists public.board_approvals (
   apply_result    jsonb,
   created_at      timestamptz not null default now()
 );
+
+-- ⚠ `create table if not exists` 는 **이미 있는 테이블에 컬럼을 더해 주지 않는다.**
+--    plan 은 테이블을 만든 뒤에 코드로 먼저 들어왔고(1b45c06), 그래서 적재가 4일간
+--    HTTP 400(PGRST204: plan 컬럼 없음)으로 조용히 실패했다. 기존 배포본을 따라잡으려면
+--    이 문장이 필요하다. 앞으로 컬럼을 더할 때도 create 문 수정과 함께 여기에 한 줄 남긴다.
+alter table public.board_approvals add column if not exists plan text;
 
 create index if not exists board_approvals_status_idx on public.board_approvals (status, date desc);
 

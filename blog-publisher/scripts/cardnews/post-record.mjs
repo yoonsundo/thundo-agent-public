@@ -53,6 +53,9 @@ export function toRow(post) {
     generator: post.generator ?? '',
     generator_effective: post.generator_effective ?? post.generator ?? '',
     published_at: post.published_at ?? new Date().toISOString(),
+    // 관리자가 인스타에서 음악을 고를 때 쓰는 추천 3곡. 파이프라인이 정제해 넣으므로
+    // 여기서는 배열 여부만 방어한다(형식이상 → 빈 배열).
+    bgm_suggestions: Array.isArray(post.bgm_suggestions) ? post.bgm_suggestions : [],
     active: true,
     // ⚠ 공개 여부는 **인스타에 실제로 올라갔는지**로 정한다(2026-08-21 반자동 발행 전환).
     //    음악을 넣을 수 없어 자동 발행을 포기했고, 파이프라인은 제작·호스팅까지만 한다.

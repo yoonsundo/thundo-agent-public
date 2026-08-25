@@ -584,5 +584,53 @@ console.log('\n[18] 승인 후 실행 — 버튼이 헛돌지 않는다');
     planApproved({ target_type: 'config', target: 'pick.daily_target', value: 5 }).kind, 'blocked');
 }
 
+/**
+ * 승인함 스키마 대조 — 코드가 보내는 컬럼이 DB 에 실제로 있는가.
+ *
+ * 🔴 이 검사가 없어서 2026-08-22~25 나흘간 승인함이 비어 있었다. `plan` 필드가 코드에만
+ *    추가되고(1b45c06) 테이블에는 없어서 적재가 매일 HTTP 400(PGRST204)으로 떨어졌는데,
+ *    호출부가 실패를 `ok: true` 로 삼켜 회의는 계속 초록이었다. 회의는 매일 열리고 결론도
+ *    났지만 **사람이 볼 곳에는 한 건도 닿지 않았다.**
+ *
+ * 네트워크 없이 잡는 방법은 하나뿐이다 — 코드가 만드는 키 집합과 스키마 파일의 컬럼 집합을
+ * 직접 맞춰 보는 것. 컬럼을 새로 보내면서 마이그레이션을 빠뜨리면 여기서 먼저 죽는다.
+ *
+ * ⚠ 스키마 파일은 사이트 레포에 있다. 없으면 **통과가 아니라 skip 으로 표시**한다 —
+ *    "검사할 게 없어서 통과" 는 이 사고를 다시 놓치는 정확한 방식이다.
+ */
+{
+  // scripts/test/ → scripts/ → blog-publisher/ → th-team/ 이므로 세 단계 위가 사이블링 루트다.
+  const SQL_PATHS = [
+    '../../../repo/thundorun/web/supabase/board_approvals.sql',
+    '../../repo/thundorun/web/supabase/board_approvals.sql',
+  ];
+  const sqlPath = SQL_PATHS.map(p => new URL(p, import.meta.url).pathname).find(p => existsSync(p));
+
+  if (!sqlPath) {
+    console.log('  ⏭ 승인함 스키마 대조 — 스키마 파일을 못 찾아 건너뜀(사이트 레포 없음)');
+  } else {
+    const sql = readFileSync(sqlPath, 'utf8');
+    // create table 본문 + 나중에 덧붙인 alter table add column 을 모두 컬럼으로 인정한다.
+    const body = sql.match(/create table[^(]*\(([\s\S]*?)\n\);/i)?.[1] ?? '';
+    const declared = new Set([
+      ...body.split('\n').map(l => l.trim().match(/^([a-z_]+)\s+[a-z]/i)?.[1]).filter(Boolean),
+      ...[...sql.matchAll(/add column if not exists\s+([a-z_]+)/gi)].map(m => m[1]),
+    ]);
+
+    ok('스키마 파일에서 컬럼을 읽어냈다', declared.size > 5);
+
+    const sent = Object.keys(toApprovalRows('2026-01-01', [{
+      status: 'human', proposal_id: 'youtube:P1', target: 't', target_type: 'agent',
+      change: 'c', plan: 'p', rationale: 'r', expected_effect: 'e', value: null,
+      explain: { why: 'w', need: 'n' },
+    }])[0]);
+
+    const missing = sent.filter(k => !declared.has(k));
+    ok(`코드가 보내는 컬럼이 전부 스키마에 있다${missing.length ? ` — 없는 것: ${missing.join(', ')}` : ''}`,
+      missing.length === 0);
+    ok('  └ plan 이 스키마에 있다(이 사고의 원인 컬럼)', declared.has('plan'));
+  }
+}
+
 console.log(`\n경영회의(board): ${passN} pass / ${failN} fail`);
 process.exit(failN ? 1 : 0);

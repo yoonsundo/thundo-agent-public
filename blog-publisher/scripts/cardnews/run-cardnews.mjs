@@ -39,7 +39,7 @@ import {
 import { refillBacklog } from './backlog.mjs';
 import { pick, pendingBacklog } from './pick.mjs';
 import { factCheck, resolveFactcheck } from './factcheck.mjs';
-import { generateScript, persistScripted, topUpBuffer, loadBuffer } from './script.mjs';
+import { generateScript, persistScripted, topUpBuffer, loadBuffer, normalizeBgmSuggestions } from './script.mjs';
 import { runGate as runGeneralizationGate } from './gate-generalization.mjs';
 import { runGate as runQuoteGate } from './gate-quote.mjs';
 import { judge as judgeImages } from './gates.mjs';
@@ -574,8 +574,15 @@ export async function runDaily(opts = {}) {
       hashtags: script.hashtags,
       postId,
     }, cfg);
+    // BGM 추천(있으면)도 함께 싣는다 — 관리자가 인스타에서 음악 고를 때 쓴다. 비차단:
+    // 형식 불량이면 [] 로 버리고 진행한다(추천은 부가 기능이지 방어선이 아니다).
+    const bgm = normalizeBgmSuggestions(script);
+    if (Array.isArray(script?.bgm_suggestions) && !bgm.length) {
+      log.warn('BGM 추천 형식 불량 → 버림(비차단)');
+    }
     flush(postId, {
       caption: caption.caption, hashtag_count: caption.hashtagCount, idem_marker: caption.idemMarker,
+      bgm_suggestions: bgm,
     }, { now: now() });
     rec('caption', true, { chars: caption.chars, hashtags: caption.hashtagCount, truncated: caption.truncated });
 
@@ -600,7 +607,10 @@ export async function runDaily(opts = {}) {
         return null;
       }
     };
-    await recordToSite('ready');
+    // 이 기록이 실패하면 그날 만든 것이 관리자에게 닿지 못하는데, 정상 종료(held·external)와
+    // 원장 모양이 같아 구분되지 않는다 → 결과를 종료 diag 에 싣는다(조용한 실패 방지).
+    const verdict = (r) => (r?.ok ? 'ok' : (r?.skipped || r?.error || 'failed'));
+    const siteRecord = verdict(await recordToSite('ready'));
 
     // ── 10. 발행 (내부 step 0 이 초크포인트) ────────────────────────────────
     stage = 'publish';
@@ -614,15 +624,15 @@ export async function runDaily(opts = {}) {
 
     // ── 11. 종료 기록 ───────────────────────────────────────────────────────
     if (published.ok && published.mediaId) {
-      // 사이트 갤러리(`/cardnews`)가 읽는 테이블에 한 행 남긴다. 발행은 이미 끝났으므로
-      // 여기 실패는 런을 죽이지 않는다 — 인스타는 되돌릴 수 없고, 이 행은 다음 런이나
-      // 손으로도 채울 수 있다. 다만 조용히 넘기지는 않는다(갤러리가 비는 원인이 된다).
       // 자동 발행이 성공했으면 같은 행을 published 로 덮는다(같은 post_id upsert).
       // 실패해도 런을 죽이지 않는다 — 인스타는 되돌릴 수 없고, ready 행은 이미 들어가 있다.
-      await recordToSite('published');
+      // ⚠ 이 재기록은 ready 기록과 **같은 실패 모드**를 갖는다(HTTP 400·네트워크·크리덴셜 부재).
+      //    둘 다 실패하면 "인스타엔 올라갔는데 갤러리엔 없는" 최악의 상태인데, 종료가
+      //    outcome:'published' 라 원장에 흔적이 0 이 된다 → 여기도 diag 에 싣는다.
+      const publishedRecord = verdict(await recordToSite('published'));
 
       await topUp({ cfg, charged, candidates, usedIds: usedBacklogIds(item, holds), now: now() });
-      finish({ outcome: 'published' });
+      finish({ outcome: 'published', diag: { site_record: siteRecord, site_record_published: publishedRecord } });
       log.info(`발행 완료 [${postId}] media=${published.mediaId} · claude ${claudeCallCount()}콜`);
       return { ok: true, post_id: postId, media_id: published.mediaId, state: 'published', steps };
     }
@@ -630,14 +640,14 @@ export async function runDaily(opts = {}) {
       const failure_class = published.held_class || classifyHeld(published.held);
       finish({
         outcome: 'held', failure_class, failure_stage: 'publish',
-        diag: { reason: published.held, state: published.state ?? null },
+        diag: { reason: published.held, state: published.state ?? null, site_record: siteRecord },
       });
       return { ok: false, post_id: postId, state: published.state ?? 'held', reason: published.held, held_class: failure_class, steps };
     }
     // `publish_unknown` 등 — held 도 아니고 발행도 아니다. 실패일로 세되 갈래는 남긴다.
     finish({
       outcome: 'error', failure_class: 'transient', failure_stage: 'publish',
-      diag: { state: published.state ?? null, reason: published.reason ?? null },
+      diag: { state: published.state ?? null, reason: published.reason ?? null, site_record: siteRecord },
     });
     return { ok: false, post_id: postId, state: published.state ?? null, reason: published.reason ?? 'publish-failed', steps };
   } catch (e) {

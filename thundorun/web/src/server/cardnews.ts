@@ -30,6 +30,25 @@ export interface CardnewsRow {
   status:       'ready' | 'published';
   /** 인스타 캡션 원문 — 관리자 화면이 복사해 쓴다. 공개 페이지는 쓰지 않는다. */
   caption:      string | null;
+  /** 관리자용 BGM 추천 3곡 — 인스타 음악 검색창에 칠 곡명·아티스트. 공개 페이지는 쓰지 않는다. */
+  bgm_suggestions: BgmSuggestion[];
+}
+
+export interface BgmSuggestion { title: string; artist: string; mood: string }
+
+/** jsonb → BGM 추천 배열(형식이상 방어 — title·artist 없는 항목은 버린다). */
+function toBgmList(v: unknown): BgmSuggestion[] {
+  if (!Array.isArray(v)) return [];
+  const out: BgmSuggestion[] = [];
+  for (const e of v) {
+    if (!e || typeof e !== 'object') continue;
+    const r = e as Record<string, unknown>;
+    const title = typeof r.title === 'string' ? r.title.trim() : '';
+    const artist = typeof r.artist === 'string' ? r.artist.trim() : '';
+    if (!title || !artist) continue;
+    out.push({ title, artist, mood: typeof r.mood === 'string' ? r.mood.trim() : '' });
+  }
+  return out;
 }
 
 /** jsonb 컬럼 → 문자열 배열(형식이상 방어). */
@@ -56,25 +75,44 @@ function normalize(r: Record<string, unknown>): CardnewsRow {
     // 'ready' 로 떨어뜨리면 이미 공개돼 있던 글이 사라진다.
     status:       r.status === 'ready' ? 'ready' : 'published',
     caption:      r.caption ? String(r.caption) : null,
+    bgm_suggestions: toBgmList(r.bgm_suggestions),
     active:       r.active !== false,
   };
 }
 
 /**
+ * **발행됨** 목록의 상한. 캡션 전문 + 슬라이드 7×URL 이 함께 오므로 무한정 자라면 응답이
+ * 계속 무거워진다(영상 목록에서 같은 문제를 이미 한 번 고쳤다).
+ *
+ * ⚠ 이 상한을 **발행대기에는 걸지 않는다.** 처음에는 한 질의에 걸었는데, 하루 2편 × 60일이면
+ *   120행이라 관리자가 두 달 밀리는 순간 **가장 오래된 발행대기가 신호도 없이 화면에서 사라진다.**
+ *   "발행대기는 상시 한 자릿수"라는 가정으로 정당화했지만, 하필 그 가정이 깨질 때만 해를 끼치므로
+ *   안전 근거가 못 된다. 조용한 실패를 없애려고 만든 화면이라 더더욱.
+ */
+const PUBLISHED_LIMIT = 120;
+
+/**
  * 관리자 화면용 — ready(발행대기)와 published(발행됨)를 모두 준다.
  * 공개 함수와 달리 `active` 로 거르지 않는다: 숨긴 건도 관리자는 봐야 되돌릴 수 있다.
  * 정렬은 created_at desc — ready 는 published_at 이 아직 의미가 없다(기본값 now()가 들어 있다).
+ * 발행대기는 **전량**, 발행됨은 최근 것만 준다(위 상한 주석).
  */
 export async function getAdminCardnews(): Promise<CardnewsRow[]> {
   const db = getSupabase();
   if (!db) return [];
+  const rows = (r: { data?: unknown; error?: unknown }): CardnewsRow[] =>
+    r.error || !Array.isArray(r.data) ? [] : r.data.map(normalize);
   try {
-    const { data, error } = await db
-      .from('cardnews_posts')
-      .select('*')
-      .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return [];
-    return data.map(normalize);
+    const [readyRes, publishedRes] = await Promise.all([
+      db.from('cardnews_posts').select('*')
+        .neq('status', 'published')
+        .order('created_at', { ascending: false }),
+      db.from('cardnews_posts').select('*')
+        .eq('status', 'published')
+        .order('created_at', { ascending: false })
+        .limit(PUBLISHED_LIMIT),
+    ]);
+    return [...rows(readyRes), ...rows(publishedRes)];
   } catch {
     return [];
   }
@@ -127,11 +165,16 @@ export async function markCardnewsPublished(postId: string, permalink: string): 
   }
   const db = getSupabase();
   if (!db) return { ok: false, error: 'DB 연결 없음' };
-  const { error } = await db
+  // .select() 로 갱신된 행을 되받는다 — 없는 post_id 는 Supabase 가 오류를 주지 않아서,
+  // 이게 없으면 오타 id 로도 "발행 완료"가 뜬다(화면은 공개됐다고 말하는데 DB 는 그대로).
+  const { data, error } = await db
     .from('cardnews_posts')
     .update({ status: 'published', active: true, permalink: link, published_at: new Date().toISOString() })
-    .eq('post_id', postId);
-  return error ? { ok: false, error: error.message } : { ok: true };
+    .eq('post_id', postId)
+    .select('post_id');
+  if (error) return { ok: false, error: error.message };
+  if (!Array.isArray(data) || data.length === 0) return { ok: false, error: '해당 카드뉴스를 찾지 못했다' };
+  return { ok: true };
 }
 
 /**
@@ -142,9 +185,12 @@ export async function unpublishCardnews(postId: string): Promise<PublishResult> 
   if (!postId) return { ok: false, error: 'post_id 가 없다' };
   const db = getSupabase();
   if (!db) return { ok: false, error: 'DB 연결 없음' };
-  const { error } = await db
+  const { data, error } = await db
     .from('cardnews_posts')
     .update({ status: 'ready', active: false, permalink: null })
-    .eq('post_id', postId);
-  return error ? { ok: false, error: error.message } : { ok: true };
+    .eq('post_id', postId)
+    .select('post_id');
+  if (error) return { ok: false, error: error.message };
+  if (!Array.isArray(data) || data.length === 0) return { ok: false, error: '해당 카드뉴스를 찾지 못했다' };
+  return { ok: true };
 }

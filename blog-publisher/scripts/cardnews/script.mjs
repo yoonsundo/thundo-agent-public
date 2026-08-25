@@ -151,6 +151,28 @@ export function validateScript(script, cfg = {}, { item = null } = {}) {
 }
 
 /**
+ * BGM 추천 정제 — **비차단**이다. 추천은 부가 기능이지 방어선이 아니라서, 불량이면
+ * `[]` 로 버리고 카드는 그대로 진행한다(validateScript 위반에 넣으면 재생성 3회를
+ * 추천 형식 고치는 데 소모한다 — 그 시도는 인용·글자수 몫이다).
+ *
+ * 계약(스펙 AC-6): **정확히 3개** + 각 항목에 비어 있지 않은 title·artist 가 있어야 채택.
+ * mood 는 있으면 싣고 없으면 '' 로 둔다. 그 외(2개·4개·필드 누락·비문자열)는 전부 [] 다.
+ */
+export function normalizeBgmSuggestions(script) {
+  const raw = script?.bgm_suggestions;
+  if (!Array.isArray(raw) || raw.length !== 3) return [];
+  const out = [];
+  for (const e of raw) {
+    const title = typeof e?.title === 'string' ? e.title.trim() : '';
+    const artist = typeof e?.artist === 'string' ? e.artist.trim() : '';
+    if (!title || !artist) return [];
+    const mood = typeof e?.mood === 'string' ? e.mood.trim() : '';
+    out.push({ title, artist, mood });
+  }
+  return out;
+}
+
+/**
  * 대본에 실어 보내는 **검증된 인용 필드**. 인용 게이트가 `script.item` 에서 이 모양을 읽는다
  * (`gate-quote.mjs:extractQuoteFields` — `obj.item` 후보). 소재 원본에서 그대로 복사하며,
  * 모델을 거치지 않는다.
@@ -289,6 +311,12 @@ ${HEDGE_BAN}
 - **진단하지 마라.** 우울·불안·번아웃을 상태로 규정하거나 무엇을 하라고 처방하지 않는다. 이 카드는 치료가 아니다.
 - 캡션 hook 은 더보기 전에 보이는 첫 두 줄이다. 해시태그는 주제와 실제로 관련된 것만.
 - 캡션 cta 에도 **저장**을 요청하라.
+
+[BGM 추천 — 관리자가 인스타에서 음악을 고를 때 쓴다]
+- 이 카드의 감정에 어울리는 **실재하는 곡 3개**를 bgm_suggestions 에 담아라.
+- **널리 알려진 곡 위주**로 골라라(인스타 음악 라이브러리에 있을 확률을 높인다). 지어내지 마라 —
+  확신이 없는 곡보다 유명한 차선이 낫다. 잔잔한 연주곡·발라드처럼 텍스트 카드 위에 깔리는 결로.
+- title 과 artist 는 인스타 음악 검색창에 그대로 칠 수 있는 표기로 쓴다.
 ${hint ? `\n${hint}\n` : ''}
 [출력] JSON 객체만:
 { "cover": { "headline": "…", "sub": "…", "country": "${(src.title ?? '').slice(0, 20)}", "flag_emoji": "📖" },
@@ -297,7 +325,8 @@ ${hint ? `\n${hint}\n` : ''}
   "quote": { "text": "${item?.quote_ko ?? ''}",
              "source": { "title": "${src.title ?? ''}", "author": "${src.author ?? ''}", "translator": null, "year": ${Number.isFinite(Number(src.year)) ? Number(src.year) : 'null'} } },
   "caption_sections": { "hook": "…", "body": "…", "cta": "…" },
-  "hashtags": ["#책속의문장", "…"] }
+  "hashtags": ["#책속의문장", "…"],
+  "bgm_suggestions": [ { "title": "곡명", "artist": "아티스트", "mood": "이 카드에 어울리는 이유 한 구절" }, … 정확히 3개 ] }
 ⚠ cover.country 는 렌더러가 모든 카드에 그리는 라벨 자리다 — **책 제목**(20자 이내)을 넣어라.
 ⚠ quote.source.translator 는 **null 고정**이다(우리가 원문에서 직접 옮겼다).
 설명 없이 JSON 만.`);

@@ -12,7 +12,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { signOut } from 'next-auth/react';
 import type { LucideIcon } from 'lucide-react';
-import { ArrowLeft, Bot, FolderKanban, GalleryVerticalEnd, Gavel, LayoutDashboard, LogOut, Megaphone, Menu, MessageCircleQuestion, MessageSquare, ShieldCheck, SlidersHorizontal, Sparkles, Images } from 'lucide-react';
+import { ArrowLeft, Bot, FolderKanban, GalleryVerticalEnd, Gavel, Images, LayoutDashboard, LogOut, Megaphone, Menu, MessageCircleQuestion, MessageSquare, ShieldCheck, SlidersHorizontal, Sparkles } from 'lucide-react';
 import ThemeToggle from '@/components/ui/ThemeToggle';
 import { SHOW_NOTICES } from '@/lib/featureFlags';
 
