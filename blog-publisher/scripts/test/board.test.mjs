@@ -12,13 +12,16 @@
 process.env.RUN_MODE = process.env.RUN_MODE || 'mock';
 
 import { readFileSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 const { validateCeoOutput, normalizeCeoOutput, collectProposals, globalProposalId, buildLeadPrompt, buildCeoPrompt, REBUTTAL_RULES, RISK_KINDS } =
   await import('../board/meeting.mjs');
 const { routeDecision, normalizeTarget, isSafePath, feedbackKey, queueEvolveFeedback, BOARD_EVOLVABLE, PROTECTED_AGENTS, CONFIG_WHITELIST, CONFIG_DENY, applyConfigChange, applyDecisions } =
   await import('../board/apply.mjs');
 const { distribution, kstDay } = await import('../board/collect.mjs');
 const { STATUS_EXPLAIN, explainHold } = await import('../board/apply.mjs');
-const { toApprovalRows, approvalKey } = await import('../board/approvals.mjs');
+const { toApprovalRows, approvalKey, enqueueApprovals } = await import('../board/approvals.mjs');
+const { publishBoard } = await import('../board/publish-board.mjs');
+const { collectPending, windowStart, DEFAULT_WINDOW_DAYS } = await import('../board/backfill-approvals.mjs');
 const { planApproved } = await import('../board/apply-approved.mjs');
 const { EVOLVABLE_AGENTS } = await import('../evolve/apply-evolve.mjs');
 const { renderMinutes } = await import('../board/run-board.mjs');
@@ -604,17 +607,22 @@ console.log('\n[18] 승인 후 실행 — 버튼이 헛돌지 않는다');
     '../../../repo/thundorun/web/supabase/board_approvals.sql',
     '../../repo/thundorun/web/supabase/board_approvals.sql',
   ];
-  const sqlPath = SQL_PATHS.map(p => new URL(p, import.meta.url).pathname).find(p => existsSync(p));
+  const sqlPath = SQL_PATHS.map(p => fileURLToPath(new URL(p, import.meta.url))).find(p => existsSync(p));
 
   if (!sqlPath) {
     console.log('  ⏭ 승인함 스키마 대조 — 스키마 파일을 못 찾아 건너뜀(사이트 레포 없음)');
   } else {
-    const sql = readFileSync(sqlPath, 'utf8');
+    /**
+     * ⚠ 줄 주석을 먼저 걷어낸다. 주석 처리된 `-- add column … ghost` 가 '있는 컬럼'으로
+     *    세어지면 **되살리지 않은 마이그레이션이 적용된 것으로 읽힌다** — 거짓 통과이고,
+     *    이 검사가 막으려던 바로 그 방향의 오류다(리뷰에서 실제 재현됨).
+     */
+    const sql = readFileSync(sqlPath, 'utf8').replace(/--[^\n]*/g, '');
     // create table 본문 + 나중에 덧붙인 alter table add column 을 모두 컬럼으로 인정한다.
     const body = sql.match(/create table[^(]*\(([\s\S]*?)\n\);/i)?.[1] ?? '';
     const declared = new Set([
-      ...body.split('\n').map(l => l.trim().match(/^([a-z_]+)\s+[a-z]/i)?.[1]).filter(Boolean),
-      ...[...sql.matchAll(/add column if not exists\s+([a-z_]+)/gi)].map(m => m[1]),
+      ...body.split('\n').map(l => l.trim().match(/^([a-z_][a-z0-9_]*)\s+[a-z]/i)?.[1]).filter(Boolean),
+      ...[...sql.matchAll(/add column if not exists\s+([a-z_][a-z0-9_]*)/gi)].map(m => m[1]),
     ]);
 
     ok('스키마 파일에서 컬럼을 읽어냈다', declared.size > 5);
@@ -630,6 +638,90 @@ console.log('\n[18] 승인 후 실행 — 버튼이 헛돌지 않는다');
       missing.length === 0);
     ok('  └ plan 이 스키마에 있다(이 사고의 원인 컬럼)', declared.has('plan'));
   }
+}
+
+/**
+ * 전달 실패는 **실패로 보고돼야 한다**.
+ *
+ * 🔴 이 계약이 없어서 나흘을 잃었다. 두 전달 경로(승인함 적재·홈페이지 반영)가 HTTP 오류에도
+ *    `ok:true` 를 돌려줬고, 호출부는 성공과 구분할 수 없었다. 회의는 매일 초록이었고 알림은
+ *    "사람 승인 필요 N건"이라고 말했는데, 사람이 볼 곳에는 아무것도 없었다.
+ *
+ * 비차단(회의를 죽이지 않는다)과 정직(실패를 실패라고 부른다)은 서로 다른 요구다.
+ * 여기서 고정하는 것은 후자다 — 전자는 호출부가 `ok` 를 보고도 계속 진행하는 것으로 지킨다.
+ *
+ * ⚠ **크리덴셜 없음은 실패가 아니다** — '해당 없음'이라 `ok:true` 로 남겨야 한다(실패로 바꾸면
+ *    크리덴셜 없는 박스에서 매 회의가 빨간 알림을 보낸다). 그 분기는 여기서 동작으로 검사하지
+ *    못한다 — `creds()` 가 `.env` 파일까지 직접 읽어서 주입점이 없다. 대신 소스를 읽어 고정한다.
+ */
+{
+  const fail = (status, body) => async () => ({ ok: false, status, text: async () => body, json: async () => ({}) });
+  const okRead = async () => ({ ok: true, status: 200, json: async () => [], text: async () => '[]' });
+
+  const q = await enqueueApprovals([{ key: 'k', date: '2026-01-01', change: 'c' }],
+    { fetchImpl: fail(400, '{"code":"PGRST204","message":"Could not find the \'plan\' column"}') });
+  ok('승인함 적재 실패는 ok:false 로 보고한다', q.ok === false);
+  ok('  └ 응답 본문을 남긴다(무엇이 틀렸는지 알아야 고친다)', /PGRST204/.test(q.detail ?? ''));
+  eq('  └ 몇 건이 못 갔는지 센다', q.failed, 1);
+
+  const writeFails = async (u, init) => (init?.method === 'POST' ? fail(500, 'boom')() : okRead());
+  const pw = await publishBoard({ date: '2026-01-01' }, { fetchImpl: writeFails });
+  ok('홈페이지 반영 쓰기 실패는 ok:false 로 보고한다', pw.ok === false);
+  ok('  └ 이유를 남긴다', /write_500/.test(pw.reason ?? ''));
+
+  const pr = await publishBoard({ date: '2026-01-01' }, { fetchImpl: fail(503, 'down') });
+  ok('읽기 실패도 ok:false — 반영은 안 된 것이다', pr.ok === false);
+  ok('  └ 읽기 단계에서 멈춰 기존 요약을 덮지 않는다', /read_503/.test(pr.reason ?? ''));
+
+  const thrown = await publishBoard({ date: '2026-01-01' }, { fetchImpl: async () => { throw new Error('net'); } });
+  ok('예외도 ok:false — 삼키지 않는다', thrown.ok === false);
+
+  // 크리덴셜 없음 분기는 주입할 수 없으므로 소스에서 고정한다(위 ⚠ 참고).
+  for (const f of ['../board/approvals.mjs', '../board/publish-board.mjs']) {
+    const src = readFileSync(fileURLToPath(new URL(f, import.meta.url)), 'utf8');
+    const line = src.split('\n').find(l => l.includes("skipped: 'no_credentials'"));
+    ok(`${f.split('/').pop()}: 크리덴셜 없음은 ok:true 로 남아 있다`, Boolean(line) && line.includes('ok: true'));
+  }
+}
+
+/**
+ * 밀린 건 복구 — 조회창과 멱등성.
+ *
+ * 회의는 하루 1회이고 적재는 그날 한 번만 시도한다. 실패한 날의 건을 다음 회의가 챙겨 주지
+ * 않으면 원장에만 남는다(8-22~25 나흘, 8건). 그래서 회의 시작 때 최근 것을 다시 올린다.
+ *
+ * ⚠ **무제한으로 긁지 않는다.** 관리자가 화면에서 지운 오래된 건을 `pending` 으로 되살리고,
+ *    한 해치를 한 요청에 실으면 행 하나 때문에 배치 전체가 떨어진다.
+ */
+{
+  const rec = (date, id, extra = {}) => JSON.stringify({
+    date, mock: false, results: [{ status: 'human', proposal_id: id, change: 'c', target: 't' }], ...extra,
+  });
+  const ledger = [
+    rec('2026-08-01', 'youtube:P1'),          // 창 밖
+    rec('2026-08-20', 'youtube:P2'),          // 창 안
+    rec('2026-08-21', 'dev:P1'),              // 창 안
+    rec('2026-08-21', 'mock:P1', { mock: true }),
+    JSON.stringify({ date: '2026-08-22', mock: false, results: [{ status: 'human', proposal_id: 'x:P1', change: '  ' }] }),
+    JSON.stringify({ date: '2026-08-22', mock: false, results: [{ status: 'skip', proposal_id: 'y:P1', change: 'c' }] }),
+    'not json',
+  ].join('\n');
+
+  eq('조회창 기본값은 14일', DEFAULT_WINDOW_DAYS, 14);
+  eq('  └ 창 시작일을 날짜로 계산한다(월 경계 넘김)', windowStart('2026-08-25', 14), '2026-08-11');
+  eq('  └ 시계는 주입받는다(오늘에 의존하지 않는다)', windowStart('2026-01-05', 14), '2025-12-22');
+
+  const win = collectPending(ledger, { since: '2026-08-11' });
+  eq('창 안의 건만 올린다', win.length, 2);
+  ok('  └ 창 밖(8-01)은 빠진다', !win.some(r => r.date === '2026-08-01'));
+  ok('  └ mock 회의는 사람에게 올리지 않는다', !win.some(r => r.proposal_id === 'mock:P1'));
+  ok('  └ 내용 없는 건(공백 change)은 올리지 않는다', !win.some(r => r.proposal_id === 'x:P1'));
+  ok('  └ human 아닌 건은 올리지 않는다', !win.some(r => r.proposal_id === 'y:P1'));
+  ok('  └ 깨진 줄이 있어도 나머지를 처리한다', win.length === 2);
+
+  eq('창을 안 주면 전체를 본다(--all 경로)', collectPending(ledger).length, 3);
+  eq('같은 키가 여러 날 나와도 한 번만 올린다',
+    collectPending([rec('2026-08-20', 'a:P1'), rec('2026-08-20', 'a:P1')].join('\n')).length, 1);
 }
 
 console.log(`\n경영회의(board): ${passN} pass / ${failN} fail`);

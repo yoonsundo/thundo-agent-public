@@ -195,6 +195,74 @@ async function checkYoutubeToken() {
   }
 }
 
+/**
+ * DB 스키마 실물 확인 — **파일이 아니라 운영 DB 에 컬럼이 있는지** 본다.
+ *
+ * 🔴 유닛테스트의 스키마 대조는 SQL **파일**을 읽는다. 파일만 고치고 마이그레이션을 안 돌리면
+ *    테스트는 초록인데 운영은 계속 400 이다. 실제로 2026-08-22~25 나흘간 그 상태였고, 승인해야
+ *    할 8건이 화면에 닿지 못했다. 파일 검사와 실물 검사는 서로를 대신하지 못한다.
+ *
+ * 한 테이블만 보지 않는 이유: `plan` 을 코드에만 추가한 그 방식(코드+SQL 수동 동기화)이
+ * 이 저장소의 표준이라, 다음 사고는 다른 테이블에서 난다. 실제로 하루 전 `bgm_suggestions`
+ * 가 같은 방식으로 cardnews 에 들어왔다 — 우연히 맞았을 뿐 구조가 막아 준 것이 아니다.
+ *
+ * 각 쓰기 경로가 **실제로 보내는 컬럼**을 그대로 `select` 한다. 하나라도 없으면 postgrest 가
+ * 이름을 짚어 준다. 목록이 코드와 어긋나면 이 점검이 헛돌므로, 컬럼을 더할 때 여기도 고친다.
+ */
+const WRITE_COLUMNS = {
+  board_approvals: ['key', 'date', 'proposal_id', 'team', 'target', 'target_type', 'change', 'plan',
+    'rationale', 'expected_effect', 'value', 'hold_why', 'hold_need', 'status'],
+  cardnews_posts: ['post_id', 'backlog_id', 'subject', 'problem', 'book', 'author', 'caption',
+    'cover_url', 'slide_urls', 'media_id', 'permalink', 'generator', 'generator_effective',
+    'published_at', 'bgm_suggestions', 'active', 'status'],
+  youtube_videos: ['youtube_id', 'title', 'subject', 'domain', 'youtube_url', 'thumbnail_url'],
+  agent_reports: ['date', 'summary', 'agents'],
+};
+
+/** 화면이 무엇을 잃는지 — 사람이 읽고 급한지 판단할 수 있게. */
+const TABLE_IMPACT = {
+  board_approvals: '경영회의 결론이 승인함에 못 뜬다',
+  cardnews_posts: '카드뉴스가 관리자 화면에 안 뜬다(발행 대기 유실)',
+  youtube_videos: '쇼츠가 사이트 영상 목록에 안 뜬다',
+  agent_reports: '일일 리포트가 /reports 에 안 뜬다',
+};
+
+async function checkDbSchema() {
+  let creds;
+  try { ({ creds } = await import('../board/approvals.mjs')); }
+  catch { return R('db-schema', OK, 'Supabase 모듈 없음 — 스킵'); }
+  const { url, key } = creds();
+  if (!url || !key) return R('db-schema', OK, 'Supabase 크리덴셜 없음 — 스킵');
+
+  const headers = { apikey: key, Authorization: `Bearer ${key}` };
+  const broken = [];
+  for (const [table, cols] of Object.entries(WRITE_COLUMNS)) {
+    try {
+      const res = await fetch(`${url}/rest/v1/${table}?select=${cols.join(',')}&limit=0`,
+        { headers, signal: AbortSignal.timeout(12000) });
+      if (res.ok) continue;
+      const body = await res.text().catch(() => '');
+      // postgrest 는 두 가지로 말한다 — 읽기(42703)는 `column <표>.<컬럼> does not exist`,
+      // 쓰기(PGRST204)는 `Could not find the '<컬럼>' column`. 둘 다 이름을 짚어 준다.
+      const missing = body.match(/column [a-z_]+\.([a-z_][a-z0-9_]*) does not exist/)?.[1]
+        ?? body.match(/'([a-z_][a-z0-9_]*)' column/)?.[1];
+      broken.push({ table, status: res.status, missing });
+    } catch (e) {
+      return R('db-schema', WARN, `스키마 확인 실패(네트워크?): ${String(e.message).slice(0, 50)}`);
+    }
+  }
+
+  if (!broken.length) {
+    return R('db-schema', OK, `DB 스키마 정상 — ${Object.keys(WRITE_COLUMNS).length}개 표의 쓰기 컬럼 전부 존재`);
+  }
+  const detail = broken.map(b =>
+    `${b.table}${b.missing ? `(‘${b.missing}’ 없음)` : `(HTTP ${b.status})`} — ${TABLE_IMPACT[b.table] ?? '쓰기 실패'}`
+  ).join(' / ');
+  return R('db-schema', FAIL,
+    `DB 스키마 불일치 ${broken.length}건: ${detail}. ` +
+    '복구: node scripts/db/migrate.mjs <thundorun>/web/supabase/<표>.sql (사람)', { human: true });
+}
+
 /** 6) 디스크 여유(가득 차면 조용한 실패). */
 function checkDisk() {
   try {
@@ -403,6 +471,7 @@ async function main() {
   const claude = safe(checkClaude); results.push(claude);
   const net = await safeAsync(checkNetwork); results.push(net);
   results.push(await safeAsync(checkYoutubeToken));
+  results.push(await safeAsync(checkDbSchema));
   results.push(safe(checkDisk));
   const claudeOk = claude.level === OK;
   const netOk = net.level === OK;

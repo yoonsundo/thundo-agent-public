@@ -112,6 +112,7 @@
     "lint:fix": "eslint . --fix",
     "board": "node scripts/board/run-board.mjs",
     "board:collect": "node scripts/board/collect.mjs",
+    "board:backfill": "node --env-file-if-exists=.env scripts/board/backfill-approvals.mjs",
     "test:board": "node scripts/test/board.test.mjs",
     "test:kernel": "node --test scripts/test/kernel.test.mjs",
     "dup:index": "node scripts/lib/dup-index.mjs",
