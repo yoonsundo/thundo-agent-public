@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
+import { supabaseCreds } from '../lib/supabase-creds.mjs';
 import { sendSlackWebhook } from '../notify/slack-webhook.mjs';
 
 const log = makeLogger('sheepdog');
@@ -210,8 +211,6 @@ async function checkYoutubeToken() {
  * 이름을 짚어 준다. 목록이 코드와 어긋나면 이 점검이 헛돌므로, 컬럼을 더할 때 여기도 고친다.
  */
 const WRITE_COLUMNS = {
-  board_approvals: ['key', 'date', 'proposal_id', 'team', 'target', 'target_type', 'change', 'plan',
-    'rationale', 'expected_effect', 'value', 'hold_why', 'hold_need', 'status'],
   cardnews_posts: ['post_id', 'backlog_id', 'subject', 'problem', 'book', 'author', 'caption',
     'cover_url', 'slide_urls', 'media_id', 'permalink', 'generator', 'generator_effective',
     'published_at', 'bgm_suggestions', 'active', 'status'],
@@ -228,15 +227,24 @@ const TABLE_IMPACT = {
 };
 
 async function checkDbSchema() {
-  let creds;
-  try { ({ creds } = await import('../board/approvals.mjs')); }
-  catch { return R('db-schema', OK, 'Supabase 모듈 없음 — 스킵'); }
-  const { url, key } = creds();
+  const { url, key } = supabaseCreds();
   if (!url || !key) return R('db-schema', OK, 'Supabase 크리덴셜 없음 — 스킵');
+
+  /**
+   * 승인함 컬럼은 **적재 코드에서 뽑는다.** 손으로 베껴 두면 목록이 코드와 어긋나는 순간
+   * 이 점검이 헛돈다 — 이 사고가 정확히 '코드와 스키마가 어긋나서' 났으므로, 감시 장치까지
+   * 같은 방식으로 어긋나게 두면 안 된다. 나머지 표는 아직 이런 진입점이 없어 목록으로 둔다.
+   */
+  let tables = WRITE_COLUMNS;
+  try {
+    const { toApprovalRows } = await import('../board/approvals.mjs');
+    const sample = toApprovalRows('2026-01-01', [{ status: 'human', proposal_id: 'x:P1', change: 'c' }])[0];
+    if (sample) tables = { board_approvals: Object.keys(sample), ...WRITE_COLUMNS };
+  } catch { /* board 모듈이 없으면 나머지 표만 본다 */ }
 
   const headers = { apikey: key, Authorization: `Bearer ${key}` };
   const broken = [];
-  for (const [table, cols] of Object.entries(WRITE_COLUMNS)) {
+  for (const [table, cols] of Object.entries(tables)) {
     try {
       const res = await fetch(`${url}/rest/v1/${table}?select=${cols.join(',')}&limit=0`,
         { headers, signal: AbortSignal.timeout(12000) });
@@ -253,7 +261,7 @@ async function checkDbSchema() {
   }
 
   if (!broken.length) {
-    return R('db-schema', OK, `DB 스키마 정상 — ${Object.keys(WRITE_COLUMNS).length}개 표의 쓰기 컬럼 전부 존재`);
+    return R('db-schema', OK, `DB 스키마 정상 — ${Object.keys(tables).length}개 표의 쓰기 컬럼 전부 존재`);
   }
   const detail = broken.map(b =>
     `${b.table}${b.missing ? `(‘${b.missing}’ 없음)` : `(HTTP ${b.status})`} — ${TABLE_IMPACT[b.table] ?? '쓰기 실패'}`
