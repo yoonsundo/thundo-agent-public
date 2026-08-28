@@ -4,6 +4,7 @@
  * admin role 이중 검증 (미들웨어 + 핸들러)
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath }          from 'next/cache';
 import { getServerSession }          from 'next-auth';
 import { authOptions }               from '@/lib/auth';
 import { getProfile, saveProfile }   from '@/server/siteProfile';
@@ -51,5 +52,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: result.error }, { status: 500 });
   }
 
+/**
+ * ⚠ 홈(`/`)은 ISR(`revalidate = 300`)이라 **저장해도 최대 5분간 옛 화면이 남는다.**
+ *    관리자는 저장 직후 홈을 확인하므로 그 사이가 "반영이 안 된다"로 읽힌다(2026-08-28 사용자 보고).
+ *    공지 API 는 이미 이렇게 하고 있었는데 프로필·프로젝트·에이전트만 빠져 있었다.
+ */
+  revalidatePath('/');
   return NextResponse.json({ ok: true, profile: merged });
 }

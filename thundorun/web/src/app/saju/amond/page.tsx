@@ -3,11 +3,12 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { LogOut } from 'lucide-react';
+import { LogOut, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Loading from '@/components/state/Loading';
 import Empty from '@/components/state/Empty';
+import ConfirmDialog from '@/app/admin/ConfirmDialog';
 
 // 사주 조회 레코드
 interface Reading {
@@ -108,6 +109,39 @@ export default function AmondPage() {
   const [tarotFetched, setTarotFetched] = useState(false);
 
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // 삭제 확인 대상 — { tab, id, label }. label 은 다이얼로그에 "무엇을 지우는지" 보여준다.
+  const [confirmTarget, setConfirmTarget] = useState<{ tab: Tab; id: string; label: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /** 탭 → 삭제 API 경로 (GET 과 같은 라우트의 DELETE). */
+  const DELETE_API: Record<Tab, string> = {
+    saju: '/api/admin/readings',
+    dream: '/api/admin/dream-readings',
+    tarot: '/api/admin/tarot-readings',
+  };
+
+  const remove = async (tab: Tab, id: string) => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`${DELETE_API[tab]}?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setDeleteError(body.error ?? `삭제 실패 (HTTP ${res.status})`);
+        return;
+      }
+      // 서버가 지운 것만 화면에서 뺀다 — 실패했는데 목록에서 사라지면 다음 방문 때 "부활"한다.
+      if (tab === 'saju') { setReadings((xs) => xs.filter((x) => x.id !== id)); setSajuTotal((n) => Math.max(0, n - 1)); }
+      if (tab === 'dream') { setDreamReadings((xs) => xs.filter((x) => x.id !== id)); setDreamTotal((n) => Math.max(0, n - 1)); }
+      if (tab === 'tarot') { setTarotReadings((xs) => xs.filter((x) => x.id !== id)); setTarotTotal((n) => Math.max(0, n - 1)); }
+      if (expanded === id) setExpanded(null);
+      setConfirmTarget(null);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // 인증 확인 + 사주 데이터 초기 로드
   useEffect(() => {
@@ -248,6 +282,14 @@ export default function AmondPage() {
                           >
                             {expanded === r.id ? '닫기' : '보기'}
                           </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            aria-label="삭제"
+                            onClick={() => setConfirmTarget({ tab: 'saju', id: r.id, label: `${r.name} · ${r.birth_date}` })}
+                          >
+                            <Trash2 size={14} aria-hidden />
+                          </button>
                         </td>
                       </tr>
                       {expanded === r.id && (
@@ -308,6 +350,14 @@ export default function AmondPage() {
                           >
                             {expanded === r.id ? '닫기' : '보기'}
                           </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            aria-label="삭제"
+                            onClick={() => setConfirmTarget({ tab: 'dream', id: r.id, label: r.dream_text.slice(0, 20) + (r.dream_text.length > 20 ? '…' : '') })}
+                          >
+                            <Trash2 size={14} aria-hidden />
+                          </button>
                         </td>
                       </tr>
                       {expanded === r.id && (
@@ -366,6 +416,14 @@ export default function AmondPage() {
                           >
                             {expanded === r.id ? '닫기' : '보기'}
                           </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            aria-label="삭제"
+                            onClick={() => setConfirmTarget({ tab: 'tarot', id: r.id, label: r.topic ?? '타로 조회' })}
+                          >
+                            <Trash2 size={14} aria-hidden />
+                          </button>
                         </td>
                       </tr>
                       {expanded === r.id && (
@@ -382,6 +440,16 @@ export default function AmondPage() {
             </div>
           </>
         )
+      )}
+
+      {confirmTarget && (
+        <ConfirmDialog
+          title="조회 이력을 삭제할까요?"
+          body={`'${confirmTarget.label}' 이력을 삭제합니다. 복구할 수 없습니다.${deleteError ? ` — ${deleteError}` : ''}`}
+          confirmLabel={deleting ? '삭제 중…' : '삭제'}
+          onConfirm={() => { if (!deleting) void remove(confirmTarget.tab, confirmTarget.id); }}
+          onClose={() => { setConfirmTarget(null); setDeleteError(null); }}
+        />
       )}
     </div>
   );

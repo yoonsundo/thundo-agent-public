@@ -6,6 +6,7 @@
  * admin role 이중 검증(미들웨어 + 핸들러). server/agents.ts 가 service_role 로 DB 접근.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath }          from 'next/cache';
 import { getServerSession }          from 'next-auth';
 import { authOptions }               from '@/lib/auth';
 import { listAgents, upsertAgent, deleteAgent } from '@/server/agents';
@@ -52,8 +53,13 @@ export async function POST(req: NextRequest) {
     active:      body.active !== false,
   };
 
-  // 공개 /agents 는 force-dynamic + no-store 라 저장 즉시 반영(별도 캐시 무효화 불필요).
+  /**
+   * 공개 `/agents` 는 force-dynamic + no-store 라 저장 즉시 반영된다.
+   * ⚠ 그런데 **홈(`/`)도 같은 목록을 그리고, 홈만 ISR(300초)이다.** 그 페이지 하나만 보고
+   *    "무효화 불필요"로 판단했던 것이 이 주석의 원래 내용이었다 — 소비자가 둘이면 둘 다 봐야 한다.
+   */
   const result = await upsertAgent(row);
+  if (result.ok) revalidatePath('/');
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }
 
@@ -71,5 +77,6 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'id 필수' }, { status: 400 });
 
   const result = await deleteAgent(id);
+  if (result.ok) revalidatePath('/');
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }
