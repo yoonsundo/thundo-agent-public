@@ -114,6 +114,7 @@
     "board:collect": "node scripts/board/collect.mjs",
     "board:backfill": "node --env-file-if-exists=.env scripts/board/backfill-approvals.mjs",
     "test:board": "node scripts/test/board.test.mjs",
+    "test:insight-redact": "node scripts/test/insight-redact.test.mjs",
     "test:kernel": "node --test scripts/test/kernel.test.mjs",
     "dup:index": "node scripts/lib/dup-index.mjs",
     "test:claude-runner": "node --test scripts/test/claude-runner.test.mjs",

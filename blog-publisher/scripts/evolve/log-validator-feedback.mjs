@@ -11,6 +11,7 @@
 //   FEEDBACK_MIN_AGE_DAYS  성과 안정화 대기일 (기본 14 — 설계 원안 30이나 신생 사이트라 단축, 성숙 후 상향)
 //   FEEDBACK_MIN_POSTS     사분위 계산 최소 표본 (기본 4)
 import { readFileSync, readdirSync, appendFileSync, existsSync } from 'node:fs';
+import { isMainModule } from '../lib/main-module.mjs';
 
 const MIN_AGE_DAYS = parseInt(process.env.FEEDBACK_MIN_AGE_DAYS || '14', 10);
 const MIN_POSTS = parseInt(process.env.FEEDBACK_MIN_POSTS || '4', 10);
@@ -107,4 +108,11 @@ async function main() {
   log(`기록: miss ${misses.length} / false-alarm ${falseAlarms.length} → ${FEEDBACK_PATH}`);
 }
 
-main().catch(e => { log(`치명 오류: ${e.message}`); process.exit(2); });
+/**
+ * ⚠ 실행 가드. 이게 없으면 **import 만 해도 본체가 돈다** — 이 파일들은 알림을 보내거나
+ *    상태 파일을 쓰므로, 테스트나 진단이 잠깐 import 하는 것만으로 실제 채널에 발송된다
+ *    (2026-09-07 실제로 발생: 함수 하나 확인하려고 import 했다가 3개 채널로 브리핑이 나갔다).
+ */
+if (isMainModule(import.meta.url)) {
+  main().catch(e => { log(`치명 오류: ${e.message}`); process.exit(2); });
+}

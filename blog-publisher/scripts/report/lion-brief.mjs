@@ -20,6 +20,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { env } from '../lib/config.mjs';
 import { sendReport } from '../notify/send-report.mjs';
 import { sendSlackWebhook } from '../notify/slack-webhook.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 
 // ── CLI 파싱 ─────────────────────────────────────────────────────────────────
 const DRY = process.env.LION_BRIEF_DRY === '1' || process.argv.includes('--dry');
@@ -330,4 +331,11 @@ async function main() {
   console.log(JSON.stringify(res));
 }
 
-main().catch(e => { console.error('[lion-brief] 오류:', e.message); process.exit(1); });
+/**
+ * ⚠ 실행 가드. 이게 없으면 **import 만 해도 본체가 돈다** — 이 파일들은 알림을 보내거나
+ *    상태 파일을 쓰므로, 테스트나 진단이 잠깐 import 하는 것만으로 실제 채널에 발송된다
+ *    (2026-09-07 실제로 발생: 함수 하나 확인하려고 import 했다가 3개 채널로 브리핑이 나갔다).
+ */
+if (isMainModule(import.meta.url)) {
+  main().catch(e => { console.error('[lion-brief] 오류:', e.message); process.exit(1); });
+}

@@ -10,13 +10,20 @@ import { loadNiche } from '../writers/llm-writer.mjs';
 import { appendAudit, ACTIONS } from '../audit/append.mjs';
 
 import { claudeText } from '../lib/claude-cli.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 const WRITERS = ['beaver', 'fox', 'wolf'];
 const VALIDATORS = ['bee']; // 검증자 진화 — 일요일(UTC) 전용 슬롯. fitness=골든셋 판정 정확도 (scorer-validator)
 const ADOPT_MARGIN = 1.02; // baseline 대비 +2% 이상이어야 채택
 const K = parseInt(process.env.EVOLVE_K || '4', 10); // 변종당 생성·채점 편수(안정성 위해 4)
 const VSAMPLE = parseInt(process.env.EVOLVE_VSAMPLE || '10', 10); // 검증자 채점 시 양품 표본 상한(부정 표본은 전수)
 
-function log(m) { console.log(`[evolve-cycle] ${m}`); }
+/**
+ * ⚠ 경과 시간을 붙인다. 예전 로그엔 시각이 없어서 **44일간 타임아웃(exit 124)이 났는데도
+ *    어느 단계가 30분을 먹는지 알 수 없었다.** 사후에 로그만 보고 원인을 짚을 수 있어야 한다.
+ */
+const T0 = Date.now();
+const elapsed = () => `${((Date.now() - T0) / 1000).toFixed(0)}s`;
+function log(m) { console.log(`[evolve-cycle +${elapsed()}] ${m}`); }
 
 function getEvolveBlock(agent) {
   const md = readFileSync(`.claude/agents/${agent}.md`, 'utf8');
@@ -96,19 +103,34 @@ async function main() {
   // 2) 채점 (외부 스코어러) — A/B 독립. 작가=생성 fitness / 검증자=골든셋 판정 정확도
   let bs, vs, improved, noRegress;
   if (kind === 'validator') {
-    log('채점: baseline (골든셋)...');
-    bs = await scoreValidatorVariant({ evolveBlock: base.text, apiKey, sample: VSAMPLE, tag: 'base' });
-    log('채점: variant (골든셋)...');
-    vs = await scoreValidatorVariant({ evolveBlock: variant, apiKey, sample: VSAMPLE, tag: 'variant' });
+    log('채점: baseline ∥ variant (골든셋)');
+    [bs, vs] = await Promise.all([
+      scoreValidatorVariant({ evolveBlock: base.text, apiKey, sample: VSAMPLE, tag: 'base' }),
+      scoreValidatorVariant({ evolveBlock: variant, apiKey, sample: VSAMPLE, tag: 'variant' }),
+    ]);
     log(`baseline score=${bs.score.toFixed(2)} (TPR=${bs.tpr.toFixed(2)} TNR=${bs.tnr.toFixed(2)}) | variant score=${vs.score.toFixed(2)} (TPR=${vs.tpr.toFixed(2)} TNR=${vs.tnr.toFixed(2)})`);
     // 회귀게이트: 종합 +2% AND seed 오탐 신규 발생 0(TPR 무감소) AND 중복fail 무증가
     improved = vs.score >= bs.score * ADOPT_MARGIN;
     noRegress = vs.tpr >= bs.tpr && vs.dup_rate <= bs.dup_rate;
   } else {
-    log('채점: baseline...');
-    bs = await scoreVariant({ writer, evolveBlock: base.text, niche, K, apiKey, model, tag: 'base' });
-    log('채점: variant...');
-    vs = await scoreVariant({ writer, evolveBlock: variant, niche, K, apiKey, model, tag: 'variant' });
+    /**
+     * 🔴 기준선과 변종을 **동시에** 돌린다. 둘은 서로를 참조하지 않는 독립 실험인데 순차로
+     *    돌면서 예산을 두 배로 썼다 — 호출당 상한 3분 × (제안 1 + 기준선 K + 변종 K) 이라
+     *    K=4 에서 27분이고, 예산은 30분이었다. 재시도 한 번이면 그대로 넘긴다.
+     *    실제로 2026-07-15부터 44일간 매일 exit 124 로 죽었고, 그동안 채택은 0건이었다.
+     *
+     * ⚠ K 를 줄이거나 기준선을 캐시하는 길도 있었지만 택하지 않았다. 전자는 표본이 줄어
+     *    분산이 커지고, 후자는 **다른 날 조건에서 잰 기준선과 오늘의 변종을 비교**하게 되어
+     *    실험 자체가 기울어진다. 병렬화는 실험 설계를 그대로 두고 시간만 줄인다.
+     *
+     * 동시 실행은 2 로 묶는다(각 side 안의 K 편은 순차). claude 프로세스를 8개 동시에
+     * 띄우면 구독 한도·메모리에 부딪힌다 — 절반으로 줄이는 것으로 충분하다.
+     */
+    log(`채점: baseline ∥ variant (각 K=${K}편, 동시 2)`);
+    [bs, vs] = await Promise.all([
+      scoreVariant({ writer, evolveBlock: base.text, niche, K, apiKey, model, tag: 'base' }),
+      scoreVariant({ writer, evolveBlock: variant, niche, K, apiKey, model, tag: 'variant' }),
+    ]);
     log(`baseline score=${bs.score.toFixed(2)} (pass=${bs.pass_rate}) | variant score=${vs.score.toFixed(2)} (pass=${vs.pass_rate})`);
     // 3) 회귀게이트(판정): 채택 = 종합 +2% AND 어느 차원도 회귀 안 함
     improved = vs.score >= bs.score * ADOPT_MARGIN;
@@ -135,4 +157,10 @@ async function main() {
   }
 }
 
-main().catch(e => { log(`치명 오류: ${e.message}`); process.exit(1); });
+/**
+ * ⚠ 실행 가드. 이게 없어서 **import 만 해도 전체 사이클이 돌았다** — 진단 중 이 파일을
+ *    한 번 import 했다가 10분을 날렸다. 이 저장소의 규약(`isMainModule`)을 따른다.
+ */
+if (isMainModule(import.meta.url)) {
+  main().catch(e => { log(`치명 오류: ${e.message}`); process.exit(1); });
+}

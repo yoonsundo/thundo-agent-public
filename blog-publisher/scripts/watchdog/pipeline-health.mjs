@@ -27,6 +27,7 @@ import { env } from '../lib/config.mjs';
 import { makeLogger } from '../lib/log.mjs';
 import { supabaseCreds } from '../lib/supabase-creds.mjs';
 import { sendSlackWebhook } from '../notify/slack-webhook.mjs';
+import { isMainModule } from '../lib/main-module.mjs';
 
 const log = makeLogger('sheepdog');
 const ROOT = process.cwd();
@@ -512,4 +513,11 @@ async function main() {
 function safe(fn) { try { return fn(); } catch (e) { return R(fn.name, WARN, `점검 예외: ${e.message}`); } }
 async function safeAsync(fn) { try { return await fn(); } catch (e) { return R(fn.name, WARN, `점검 예외: ${e.message}`); } }
 
-main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(2); });
+/**
+ * ⚠ 실행 가드. 이게 없으면 **import 만 해도 본체가 돈다** — 이 파일들은 알림을 보내거나
+ *    상태 파일을 쓰므로, 테스트나 진단이 잠깐 import 하는 것만으로 실제 채널에 발송된다
+ *    (2026-09-07 실제로 발생: 함수 하나 확인하려고 import 했다가 3개 채널로 브리핑이 나갔다).
+ */
+if (isMainModule(import.meta.url)) {
+  main().catch(e => { log.error(`치명 오류: ${e.message}`); process.exit(2); });
+}

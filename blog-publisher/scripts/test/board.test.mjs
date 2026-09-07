@@ -19,7 +19,8 @@ const { routeDecision, normalizeTarget, isSafePath, feedbackKey, queueEvolveFeed
   await import('../board/apply.mjs');
 const { distribution, kstDay } = await import('../board/collect.mjs');
 const { STATUS_EXPLAIN, explainHold } = await import('../board/apply.mjs');
-const { toApprovalRows, approvalKey, enqueueApprovals } = await import('../board/approvals.mjs');
+const { toApprovalRows, toAskRows, approvalKey, enqueueApprovals } = await import('../board/approvals.mjs');
+const { collectDev, collectBlog } = await import('../board/collect.mjs');
 const { publishBoard } = await import('../board/publish-board.mjs');
 const { collectPending, windowStart, DEFAULT_WINDOW_DAYS } = await import('../board/backfill-approvals.mjs');
 const { planApproved } = await import('../board/apply-approved.mjs');
@@ -722,6 +723,108 @@ console.log('\n[18] 승인 후 실행 — 버튼이 헛돌지 않는다');
   eq('창을 안 주면 전체를 본다(--all 경로)', collectPending(ledger).length, 3);
   eq('같은 키가 여러 날 나와도 한 번만 올린다',
     collectPending([rec('2026-08-20', 'a:P1'), rec('2026-08-20', 'a:P1')].join('\n')).length, 1);
+}
+
+/**
+ * 회사가 사이트를 **제품으로** 보는가.
+ *
+ * 🔴 CTO 가 사이트에 대해 받던 값은 `site_status`(살아있나)뿐이었고, mole 의 일일 분석은
+ *    `observer_present: true` 라는 불리언 하나로 줄어 있었다. 그 결과 23일간 제안 68건 중
+ *    사이트를 개선하자는 것이 **0건**이었다 — 못 본 것을 고칠 수는 없다.
+ *    실측(2026-09-07): 글 181편에 7일 검색 노출 4회·클릭 0, 네이버 31쿼리 중 2개만 노출.
+ */
+{
+  const dev = collectDev('2026-09-07');
+  ok('CTO 브리핑에 사이트 제품 지표가 있다', dev.site_product && typeof dev.site_product === 'object');
+
+  const KEYS = ['observer_headline', 'search_impressions_7d', 'search_clicks_7d', 'naver_queries_ranked'];
+  for (const k of KEYS) ok(`  └ ${k} 를 싣는다`, k in dev.site_product);
+
+  /**
+   * ⚠ 없는 값을 0 으로 채우지 않는다. "노출 0" 과 "측정 안 됨" 은 전혀 다른 사실이고,
+   *    섞이면 계측이 끊긴 날을 성과 하락으로 읽는다.
+   */
+  ok('측정 못 한 값은 null 이지 0 이 아니다',
+    Object.values(dev.site_product).every(v => v !== undefined) &&
+    (dev.site_product.search_impressions_7d === null || typeof dev.site_product.search_impressions_7d === 'number'));
+
+  ok('  └ 성과 분석이 없으면 gaps 로 드러난다',
+    dev.site_product.observer_headline ? true : dev.gaps.some(g => /성과 분석 없음/.test(g)));
+}
+
+/**
+ * 사람이 해야 할 일이 주인에게 닿는가.
+ *
+ * 🔴 `asks_human` 은 회의록 마크다운 안 한 줄로만 남았다 — 승인함에도 알림에도 가지 않았다.
+ *    그런데 **자동 반영기가 없는 일은 전부 여기로 온다.** 제안 스키마의 target_type 이
+ *    agent|config 뿐이라 "사이트를 고치자"는 proposals 로 표현조차 되지 않기 때문이다.
+ *    회사가 문제를 알아도 주인에게 도달하지 않는 구조였다.
+ */
+{
+  const briefs = [
+    { team: 'dev', lead: 'rhino', brief: { asks_human: ['검색 노출이 0에 가깝다 — 사이트 구조를 손봐야 한다', '  '] } },
+    { team: 'blog', lead: 'falcon', brief: { asks_human: [] } },
+    { team: 'youtube', lead: 'dolphin', brief: {} },
+    { team: 'broken', lead: 'x' },
+  ];
+  const rows = toAskRows('2026-09-07', briefs);
+  eq('사람 조치 요청이 승인 대기 행이 된다', rows.length, 1);
+  eq('  └ 빈 문장은 쌓지 않는다(판단 근거 없는 승인 금지)', rows.filter(r => !String(r.change).trim()).length, 0);
+  eq('  └ 제안과 구분되는 종류로 표시한다', rows[0].target_type, 'human_task');
+  ok('  └ 어느 팀이 올렸는지 남는다', rows[0].team === 'dev');
+  ok('  └ 왜 자동이 아닌지 사람 말로 설명한다', /자동 반영기가 없는/.test(rows[0].hold_why));
+  ok('  └ brief 가 없어도 죽지 않는다', true);
+
+  // 멱등키가 제안과 겹치지 않아야 한다 — 겹치면 한쪽이 다른 쪽을 덮는다.
+  const proposalRows = toApprovalRows('2026-09-07', [
+    { status: 'human', proposal_id: 'dev:P1', change: 'c', target: 't' },
+  ]);
+  const keys = new Set([...rows, ...proposalRows].map(r => r.key));
+  eq('제안과 사람요청의 멱등키가 충돌하지 않는다', keys.size, rows.length + proposalRows.length);
+
+  // 같은 브리핑을 두 번 넣어도 키가 같아야 재적재가 중복을 만들지 않는다.
+  eq('같은 입력이면 같은 키(재적재해도 중복 없음)',
+    toAskRows('2026-09-07', briefs)[0].key, rows[0].key);
+}
+
+/**
+ * 발행 수치의 세 가지 상태 — 끝남 / 아직 / 저장만 막힘.
+ *
+ * 🔴 이사회가 09:20 에 회의하는데 일일 체인은 09:07~10:37 이라, 회의 시점엔 오늘 발행물이
+ *    아직 없어 `published_today: 0` 이 됐다. 팀장 4명이 "발행 0편"을 전제로 브리핑하고
+ *    CEO 가 그걸 심의했다 — 실제로는 매일 3편씩 정상 발행 중이었다(총 203편).
+ *
+ * ⚠ 보안 게이트가 유출을 잡으면 스크립트가 `exit 1` 로 끊겨 `=== done` 에 도달하지 못한다.
+ *    그 마커 하나만 보면 **커밋이 막힌 날 = 발행 0편**이 되어 같은 오해가 다른 경로로 돌아온다.
+ *    그래서 `work-done`(생산 끝) 과 `done`(저장 끝) 을 나눈다.
+ */
+{
+  const { writeFileSync, mkdirSync, rmSync, existsSync } = await import('node:fs');
+  const DAY = '2099-01-02';                       // 실제 로그와 겹치지 않는 날짜
+  const f = `runs/cron-${DAY}.log`;
+  mkdirSync('runs', { recursive: true });
+  const had = existsSync(f);
+
+  const state = (txt) => { writeFileSync(f, txt, 'utf8'); return collectBlog(DAY); };
+
+  const running = state('...진행 중...\n');
+  eq('런이 진행 중이면 발행 수치는 미확정(0 이 아니다)', running.published_today, null);
+  ok('  └ 왜 모르는지 gaps 로 말한다', running.gaps.some(g => /아직 끝나지 않았다/.test(g)));
+
+  const workOnly = state('=== work-done 2099-01-02T01:00:00Z ===\n');
+  eq('생산이 끝났으면 수치를 확정한다', workOnly.published_today, 0);
+  ok('  └ 저장이 안 된 것은 따로 드러낸다',
+    workOnly.daily_persisted === false && workOnly.gaps.some(g => /커밋되지 않았다/.test(g)));
+
+  const full = state('=== work-done 2099-01-02T01:00:00Z ===\n=== done 2099-01-02T01:30:00Z ===\n');
+  ok('저장까지 끝나면 경고가 사라진다',
+    full.daily_persisted === true && !full.gaps.some(g => /커밋되지 않았다/.test(g)));
+
+  // 예전 로그(work-done 이 없던 시절)도 done 만으로 완료로 읽어야 한다 — 하위호환.
+  const legacy = state('=== done 2099-01-02T01:30:00Z ===\n');
+  ok('예전 로그(done 만 있음)도 완료로 읽는다', legacy.daily_run_finished === true);
+
+  if (!had) rmSync(f, { force: true });
 }
 
 console.log(`\n경영회의(board): ${passN} pass / ${failN} fail`);
