@@ -39,6 +39,7 @@ export async function GET() {
 ## 주요 섹션
 
 - [블로그 목록](${BASE}/blog)
+- [편집 정책 · AI 사용 고지 · 정정 절차](${BASE}/editorial-policy)
 - [RSS 피드](${BASE}/feed.xml)
 - [사이트맵](${BASE}/sitemap.xml)
 

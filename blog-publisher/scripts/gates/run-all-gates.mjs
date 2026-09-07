@@ -2,14 +2,15 @@
 /**
  * run-all-gates.mjs — 게이트 실행 & 결과 집계
  * dup → length → banned → lint → links → empty → ai-tells → sources →
- * credibility → density → hedge → internal-dup → niche → render-fit → seo → source-fidelity
+ * credibility → density → hedge → internal-dup → niche → render-fit → seo → source-fidelity →
+ * firsthand
  * (build/deploy는 별도 인자 필요해 run-all에서 제외, 직접 호출)
  *
  * 입력: argv[2] = 초안 .md 절대경로
  * 출력: stdout JSON 1줄 {all_pass, gates:[GateResult], evidence:{git_sha,build_hash,url_status}}
  * exit: 0=전부 통과 / 1=하나라도 실패 / 2=실행오류
  *
- * 2026-08-21(F-07): 게이트 16종을 **node 프로세스로 각각 spawn** 하던 것을 함수 호출로 바꿨다.
+ * 2026-08-21(F-07): 게이트 16종(현재 17종)을 **node 프로세스로 각각 spawn** 하던 것을 함수 호출로 바꿨다.
  * 프로세스를 함수 단위로 쓰는 것이 이 저장소에서 가장 비싼 복잡성이었다 — 게이트 하나를
  * 부르려고 spawn·stdout 파싱·exit 해석·타임아웃 관리·JSON 파싱 실패 처리가 필요했고,
  * 각 프로세스가 `config/pipeline.json` 을 다시 읽느라 **설정이 JSON 과 코드 두 곳에** 있었다.
@@ -41,6 +42,7 @@ import { evaluate as niche }          from './check-niche.mjs';
 import { evaluate as renderFit }      from './check-render-fit.mjs';
 import { evaluate as seo }            from './check-seo.mjs';
 import { evaluate as sourceFidelity } from './check-source-fidelity.mjs';
+import { evaluate as firsthand }      from './check-firsthand.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +64,8 @@ const GATES = [
   ['render-fit',      renderFit],
   ['seo',             seo],
   ['source-fidelity', sourceFidelity],   // S3a shadow 기본 (config/source-pack.json gate_enforce)
+  // 맨 뒤에 붙인다 — 결과 배열 순서가 계약이라 기존 16개의 인덱스를 밀면 안 된다.
+  ['firsthand',       firsthand],        // 조작된 1인칭 실행 주장 (2026-09-07 신설)
 ];
 
 /** git SHA (HEAD) — 없으면 null */

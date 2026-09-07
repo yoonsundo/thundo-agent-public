@@ -125,16 +125,30 @@ describe('서버 경계 — 숫자를 애초에 보내지 않는다', () => {
     expect(src, 'toPublicPopularPosts 를 거치지 않음').toMatch(/toPublicPopularPosts\(/);
   });
 
-  // 파일별로 분리 — 루프 안 단언은 첫 실패에서 멈춰 두 파일이 동시에 깨져도 1건만 보고된다.
-  it.each([
-    'src/app/(site)/blog/page.tsx',
-    'src/app/(site)/blog/[slug]/page.tsx',
-  ])('%s 는 관리자일 때만 조회수를 읽는다', (rel) => {
-    const src = read(rel);
+  // 목록(/blog)은 searchParams 때문에 ISR 이 불가능해 동적 렌더로 남았다 — 세션을 읽을 수
+  // 있으므로 서버에서 관리자만 조회한다.
+  it('src/app/(site)/blog/page.tsx 는 관리자일 때만 조회수를 읽는다', () => {
+    const src = read('src/app/(site)/blog/page.tsx');
     expect(src, 'isAdminViewer import 없음').toContain("from '@/server/adminViewer'");
     expect(src, 'isAdminViewer 호출 없음').toMatch(/isAdminViewer\(\)/);
     // 무조건 조회 금지 — 조건 없이 대입하면 비관리자도 DB 왕복이 생기고 숫자가 렌더로 흘러간다.
     expect(src, '조회수를 조건 없이 조회함').not.toMatch(/^\s*(?:const |let )?views\s*=\s*await getBlogView/m);
+  });
+
+  /**
+   * 🔴 글 상세(/blog/[slug])는 2026-09-07 에 ISR 로 바뀌었다. 캐시된 HTML 하나를 전 방문자가
+   *    공유하므로 **세션별 분기 자체가 불가능**하다 — 서버에서 `isAdminViewer()` 로 조건부
+   *    렌더하면 먼저 온 사람의 화면이 캐시에 굳어 비관리자에게도 숫자가 나간다.
+   *    그래서 여기서 요구하는 것은 목록과 정반대다: **세션도 조회수도 서버에서 읽지 마라.**
+   */
+  it('src/app/(site)/blog/[slug]/page.tsx 는 ISR 이라 조회수를 서버에서 읽지 않는다', () => {
+    const src = read('src/app/(site)/blog/[slug]/page.tsx');
+    expect(src, 'ISR 이 아님 — 이 검사의 전제가 사라졌다').toMatch(/export const revalidate\s*=\s*\d+/);
+    expect(src, 'force-dynamic 이 남아 있으면 ISR 이 아니다').not.toMatch(/dynamic\s*=\s*'force-dynamic'/);
+    expect(src, 'ISR 페이지가 세션을 읽는다').not.toContain('@/server/adminViewer');
+    expect(src, 'ISR 페이지가 조회수를 서버에서 읽는다').not.toContain('getBlogViews');
+    // 관리자 경로가 아예 사라진 것도 회귀다 — 클라이언트 컴포넌트로 옮겼는지 확인한다.
+    expect(src, '관리자 조회수 경로가 없다').toContain('AdminBlogViews');
   });
 
   it('site-chat 라우트가 canSeeViews 를 판정해 넘긴다', () => {

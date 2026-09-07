@@ -5,6 +5,8 @@
  * 잠그는 것:
  *   [1] 데이터랩 배치 계획·앵커 정규화 (순수)
  *   [2] 후보 수집·기회 점수·최종 점수 (순수)
+ *   [2b] 승산 점수 — 헤드텀 붕괴 수리(볼륨 순 붕괴 차단 + 저볼륨 탈락 금지 계약)
+ *   [2c] 연관키워드 조회 키 정합 — searchad.all ↔ keyword-demand 승격 경로
  *   [3] mock e2e — 격리 cwd 에서 산출물 3종 + mock 오염 방지(loadDemandCandidates 거부)
  *   [4] no-cred graceful — 크리덴셜 없으면 warn+exit 0, candidates 미생성
  *   [5] apply-targeting 병합 — demand 신규 추가·상한·tier 가중치·기존 무손상
@@ -12,7 +14,7 @@
  * 실행: node scripts/test/keyword-demand.test.mjs
  * (외부 의존 없음 — [3b]만 가짜 크리덴셜로 실호출을 시도하나 401/실패가 곧 기대 결과라 네트워크 유무와 무관)
  */
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -20,8 +22,10 @@ import { execFileSync } from 'node:child_process';
 process.env.RUN_MODE = 'mock';
 
 const { planBatches, normalizeWithAnchor, CANDIDATES_PER_CALL } = await import('../seo/datalab.mjs');
-const { discoverCandidates, scoreOpportunity, finalScore, parseTags, loadDemandCandidates, markDemandConsumed, isNicheKeyword, buildReport } =
+const { discoverCandidates, scoreOpportunity, finalScore, parseTags, loadDemandCandidates, markDemandConsumed, isNicheKeyword, buildReport,
+        volumeFitness, volumeTieBreak, winnabilityScore, DEFAULT_WINNABILITY } =
   await import('../seo/keyword-demand.mjs');
+const { fetchKeywordStats, normKey } = await import('../seo/searchad.mjs');
 const { buildNewKeywords } = await import('../seo/apply-targeting.mjs');
 
 let pass = 0, fail = 0;
@@ -105,6 +109,63 @@ console.log('[2] 후보 수집·점수 (순수)');
   eq(report.includes('\n# 탈출'), false, '표 밖 마크다운 줄 주입 불가');
 }
 
+console.log('[2b] 승산 점수 — 헤드텀 붕괴 수리');
+{
+  // 승산 곡선: 구간 안은 1.0, 밖으로 갈수록 감점(위쪽이 훨씬 가파르다)
+  eq(volumeFitness(100), 1, '구간 하단(월 100) = 승산 1.0');
+  eq(volumeFitness(5000), 1, '구간 상단(월 5,000) = 승산 1.0');
+  eq(volumeFitness(1000), 1, '구간 한가운데 = 승산 1.0');
+  eq(volumeFitness(null), null, '측정 못 한 볼륨은 null (0 과 구분)');
+  const headroom = volumeFitness(2067000);   // chatgpt 실측 볼륨
+  eq(headroom < 0.1, true, `헤드텀(월 206만) 승산 급락 — ${headroom.toFixed(3)}`);
+  const longtail = volumeFitness(5);         // "< 10" 저볼륨 표기 = 5
+  eq(longtail >= DEFAULT_WINNABILITY.below_floor, true, `측정불능(<10) 지대도 하한 위 — ${longtail.toFixed(3)}`);
+  // 🔴 이기는 지대를 볼륨으로 죽이지 않는다는 계약
+  eq(volumeFitness(1) >= DEFAULT_WINNABILITY.below_floor, true, '볼륨 1 이어도 0 으로 떨어지지 않음(탈락 게이트 없음)');
+  eq(volumeFitness(30) > volumeFitness(2067000), true, '저볼륨 롱테일 승산 > 헤드텀 승산');
+
+  // tie-break: 구간 안에서 큰 쪽이 앞서되 선형 지배는 안 되도록 로그·상한 1
+  eq(volumeTieBreak(5000).toFixed(2), '1.00', '구간 상단 tie-break = 1.0');
+  eq(volumeTieBreak(2067000), 1, '헤드텀 tie-break 는 상한 1 로 잘림(선형 볼륨 지배 차단)');
+  eq(volumeTieBreak(210) < volumeTieBreak(4370), true, '구간 안에서는 큰 쪽이 앞선다');
+
+  // 실측 리포트(2026-09-06)의 붕괴 재현 — 헤드텀 1위가 승산 키워드로 바뀌어야 한다
+  const real = [
+    { keyword: 'chatgpt', monthly: 2067000 },
+    { keyword: '바이브 코딩', monthly: 31800 },
+    { keyword: 'copilot', monthly: 29200 },
+    { keyword: 'cursor', monthly: 4370 },
+    { keyword: 'claude code', monthly: 2540 },
+    { keyword: '파이썬 자동매매', monthly: 50 },
+    { keyword: '클로드 프롬프트 캐싱', monthly: 10 },
+  ].map(r => ({ ...r, score: winnabilityScore({ monthly: r.monthly, opportunity: 1.5 }) }))
+   .sort((a, b) => b.score - a.score);
+  eq(real[0].keyword, 'cursor', `1위가 헤드텀 아닌 승산 키워드 (실제: ${real[0].keyword})`);
+  eq(real[real.length - 1].keyword, 'chatgpt', '월 206만 헤드텀은 최하위로 밀린다');
+  const tail = real.find(r => r.keyword === '클로드 프롬프트 캐싱');
+  const head = real.find(r => r.keyword === 'chatgpt');
+  eq(tail.score > head.score, true, `월 10 롱테일 > 월 206만 헤드텀 (${tail.score.toFixed(2)} > ${head.score.toFixed(2)})`);
+  eq(tail.score > 0, true, '저볼륨도 0점이 아니다 — 후보로 남을 수 있다');
+
+  // 기회가 반영되긴 한다 (상수 붕괴여도 점수식이 기회를 무시하진 않음)
+  eq(winnabilityScore({ monthly: 1000, opportunity: 1.5 }) > winnabilityScore({ monthly: 1000, opportunity: 0 }), true,
+     '같은 볼륨이면 미노출(기회↑) 쪽이 높다');
+  eq(winnabilityScore({ monthly: null, opportunity: 1.5 }), null, '볼륨 측정불능 → 점수 null');
+}
+
+console.log('[2c] 연관키워드 조회 키 정합 (searchad ↔ keyword-demand)');
+{
+  // mock 응답은 힌트마다 "<힌트>추천"·"<힌트>방법" 연관을 만든다 → 요청에 없던 키워드다.
+  const sa = await fetchKeywordStats(['ai 코딩'], { creds: null });
+  eq(sa.related.length > 0, true, `연관키워드 산출 (${sa.related.length}개)`);
+  const rel = sa.related[0];
+  // 🔴 회귀 잠금: 호출측은 연관 키워드를 후보로 승격한 뒤 볼륨을 조회한다.
+  //   stats 로 조회하면 영원히 undefined 였다(6주간 searchad-rel 행 0개의 원인).
+  eq(sa.stats.get(normKey(rel.keyword)), undefined, 'stats 에는 연관분이 없다(설계상 요청분 전용)');
+  eq(sa.all.get(normKey(rel.keyword))?.total, rel.total, 'all 로는 연관분 볼륨이 조회된다');
+  eq(sa.all.get(normKey('ai 코딩'))?.total, sa.stats.get(normKey('ai 코딩'))?.total, 'all 은 요청분도 그대로 담는다');
+}
+
 console.log('[3] mock e2e (격리 cwd)');
 const sandbox = mkdtempSync(join(tmpdir(), 'kwd-'));
 {
@@ -137,6 +198,13 @@ const sandbox = mkdtempSync(join(tmpdir(), 'kwd-'));
 
   const cand = JSON.parse(readFileSync(join(sandbox, 'state/keyword-demand-candidates.json'), 'utf8'));
   eq(cand.mock, true, 'mock 산출물에 mock 표시');
+  // 🔴 배선 회귀 잠금 — 연관 승격분이 볼륨을 못 찾아 전멸하던 사각지대
+  const relRows = cand.items.filter(x => (x.sources || []).includes('searchad-rel'));
+  eq(relRows.length > 0, true, `searchad-rel 후보가 실제로 적재됨 (${relRows.length}개)`);
+  eq(relRows.every(x => x.monthly != null && x.score != null), true, 'searchad-rel 후보에 월간검색수·점수가 실려 있다');
+  const report = readFileSync(join(sandbox, 'docs/reports/seo', readdirSync(join(sandbox, 'docs/reports/seo'))[0]), 'utf8');
+  eq(report.includes('searchad-rel'), true, '리포트에 searchad-rel 출처 행이 보인다');
+  eq(report.includes('| 승산 |'), true, '리포트에 승산 열 추가');
   // 🔴 오염 방지의 핵심 — 실제 적용 경로(allowMock=false)는 mock 파일을 거부한다
   eq(loadDemandCandidates({ path: join(sandbox, 'state/keyword-demand-candidates.json'), allowMock: false }), null,
      'mock candidates 를 실적용이 거부');

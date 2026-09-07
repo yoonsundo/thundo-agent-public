@@ -1,13 +1,24 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { getPostSummaries, searchPostSlugs, type PostSummary } from '@/lib/blog';
+import { getCachedPostSummaries, searchPostSlugs, type PostSummary } from '@/lib/blog';
 import { getBlogViewMap } from '@/server/blogViews';
 import { isAdminViewer } from '@/server/adminViewer';
 import BlogSearch from '@/components/BlogSearch';
 import Empty from '@/components/state/Empty';
 import ErrorState from '@/components/state/ErrorState';
+import { CardSkeleton } from '@/components/state/Skeleton';
 
-export const dynamic = 'force-dynamic';
+/**
+ * 🔴 이 페이지는 ISR 로 만들 수 없다 — 게으름이 아니라 구조다.
+ *    목록은 `searchParams`(tag·q·page)를 서버에서 읽어 결과를 바꾼다. 캐시된 HTML 하나로
+ *    `?tag=AI` 와 `?page=3` 을 동시에 만족시킬 수 없으므로 라우트는 요청마다 렌더돼야 한다.
+ *    대신 **비싼 쪽(DB 왕복)을 캐시**한다 — getCachedPostSummaries(태그 무효화, lib/blog.ts).
+ *    요청별 입력이 없는 글 상세(/blog/[slug])는 거기서 진짜 ISR 을 쓴다.
+ *
+ * ⚠ `export const dynamic = 'force-dynamic'` 를 뺐다. searchParams·세션 때문에 어차피 동적
+ *    렌더인데, force-dynamic 이 붙어 있으면 데이터 캐시까지 함께 꺼져 위 캐시가 무의미해진다.
+ */
 
 export const metadata = {
   title: '블로그 — Thundo',
@@ -16,12 +27,12 @@ export const metadata = {
 
 const PER_PAGE = 10;
 
-/** tag/q/page 를 보존한 /blog 쿼리스트링 생성(빈 값은 생략). */
 /** 태그 필터 pill 클래스 — 선택된 태그면 강조, 아니면 중립. */
 function tagClass(active: boolean): string {
   return active ? 'tag tag-accent' : 'tag tag-neutral';
 }
 
+/** tag/q/page 를 보존한 /blog 쿼리스트링 생성(빈 값은 생략). */
 function hrefWith(params: { tag?: string; q?: string; page?: number }): string {
   const sp = new URLSearchParams();
   if (params.tag) sp.set('tag', params.tag);
@@ -31,7 +42,14 @@ function hrefWith(params: { tag?: string; q?: string; page?: number }): string {
   return qs ? `/blog?${qs}` : '/blog';
 }
 
-export default async function BlogListPage({
+/**
+ * 목록 본문 — DB 를 기다리는 부분만 Suspense 안에 둔다.
+ *
+ * 왜 loading.tsx 가 아니라 페이지 안 Suspense 인가: `blog/loading.tsx` 는 자식인
+ * `/blog/[slug]` 까지 덮어 그쪽 응답 상태를 200 으로 굳혀 버린다(soft-404, 2026-09-07 실측).
+ * 경계를 이 파일 안으로 좁히면 로딩 골격은 목록에만 걸리고 상세의 404 는 404 로 나간다.
+ */
+async function BlogListBody({
   searchParams,
 }: {
   searchParams: Promise<{ q?: string; tag?: string; page?: string }>;
@@ -46,20 +64,10 @@ export default async function BlogListPage({
   let views: Record<string, number> | null;
   try {
     // 목록·검색은 서로 독립이라 동시에 — 순차로 하면 왕복 시간이 그대로 더해진다.
-    [posts, matched] = await Promise.all([getPostSummaries(), searchPostSlugs(q)]);
+    [posts, matched] = await Promise.all([getCachedPostSummaries(), searchPostSlugs(q)]);
     views = (await isAdminViewer()) ? await getBlogViewMap() : null;
   } catch {
-    return (
-      <div className="container-narrow">
-        <div className="page-head">
-          <div>
-            <h1 className="page-title">블로그</h1>
-            <p className="page-sub">AI 도구 · 자동화 · 생산성</p>
-          </div>
-        </div>
-        <ErrorState detail="글 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." />
-      </div>
-    );
+    return <ErrorState detail="글 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." />;
   }
 
   // 태그 목록(빈도 내림차순 → 이름순). 필터 pill 렌더용.
@@ -89,6 +97,132 @@ export default async function BlogListPage({
   const pageItems = filtered.slice(start, start + PER_PAGE);
 
   return (
+    <>
+      <BlogSearch initialQuery={q} tag={tag} />
+
+      {/* 태그 필터 — 시안 A(사용자 승인 2026-07-02): 상위 8개 한 줄 + 나머지 더보기 토글 */}
+      {allTags.length > 0 && (
+        <div className="stack-2">
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <Link href={hrefWith({ q })} className={tagClass(tag === '')}>
+              전체
+            </Link>
+            {primaryTags.map((t) => (
+              <Link key={t} href={hrefWith({ tag: t, q })} className={tagClass(tag === t)}>
+                #{t}
+              </Link>
+            ))}
+          </div>
+          {restTags.length > 0 && (
+            <details className="accordion">
+              <summary>+{restTags.length} 더보기</summary>
+              <div className="accordion-body row" style={{ flexWrap: 'wrap' }}>
+                {restTags.map((t) => (
+                  <Link key={t} href={hrefWith({ tag: t, q })} className={tagClass(tag === t)}>
+                    #{t}
+                  </Link>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* 결과 요약 */}
+      {(q.trim() || tag) && (
+        <p className="text-muted">
+          {filtered.length > 0 ? `${filtered.length}개의 글` : '일치하는 글이 없습니다.'}
+          {tag && <span> · #{tag}</span>}
+          {q.trim() && <span> · “{q.trim()}”</span>}
+        </p>
+      )}
+
+      {posts.length === 0 ? (
+        <Empty title="아직 발행된 글이 없습니다" body="곧 새로운 글이 올라올 예정입니다." />
+      ) : pageItems.length === 0 ? (
+        <Empty title="조건에 맞는 글이 없습니다" body="다른 검색어나 태그를 시도해 보세요." />
+      ) : (
+        <div className="stack-6">
+          {pageItems.map((post) => (
+            <Link key={post.slug} href={`/blog/${post.slug}`} className="card card-link">
+              {post.tags && post.tags.length > 0 && (
+                <span className="card-kicker">{post.tags.map((t) => `#${t}`).join(' ')}</span>
+              )}
+              <span className="card-title">{post.title}</span>
+              {post.description && <p className="card-body">{post.description}</p>}
+              <div className="card-meta">
+                <time dateTime={post.date}>
+                  {post.date
+                    ? new Intl.DateTimeFormat('ko-KR', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric',
+                      }).format(new Date(post.date))
+                    : ''}
+                </time>
+                {/* 구분점도 함께 조건부 — 숫자만 지우면 날짜 뒤에 '·' 가 덩그러니 남는다. */}
+                {views !== null && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>{(views[post.slug] ?? 0).toLocaleString()} 조회</span>
+                  </>
+                )}
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {/* 페이지네이션 */}
+      {totalPages > 1 && (
+        <nav className="pagination" aria-label="페이지 이동">
+          {current > 1 ? (
+            <Link href={hrefWith({ tag, q, page: current - 1 })} className="page-btn" aria-label="이전 페이지">
+              <ChevronLeft size={16} aria-hidden="true" />
+            </Link>
+          ) : (
+            <button type="button" className="page-btn" disabled aria-label="이전 페이지">
+              <ChevronLeft size={16} aria-hidden="true" />
+            </button>
+          )}
+
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+            <Link
+              key={n}
+              href={hrefWith({ tag, q, page: n })}
+              aria-current={n === current ? 'page' : undefined}
+              className="page-btn"
+            >
+              {n}
+            </Link>
+          ))}
+
+          {current < totalPages ? (
+            <Link href={hrefWith({ tag, q, page: current + 1 })} className="page-btn" aria-label="다음 페이지">
+              <ChevronRight size={16} aria-hidden="true" />
+            </Link>
+          ) : (
+            <button type="button" className="page-btn" disabled aria-label="다음 페이지">
+              <ChevronRight size={16} aria-hidden="true" />
+            </button>
+          )}
+
+          <div className="spacer" />
+          <span className="text-muted">
+            {start + 1}–{Math.min(start + PER_PAGE, filtered.length)} / {filtered.length}건
+          </span>
+        </nav>
+      )}
+    </>
+  );
+}
+
+export default function BlogListPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; tag?: string; page?: string }>;
+}) {
+  return (
     <div className="container-narrow">
       <div className="page-head">
         <div>
@@ -98,121 +232,11 @@ export default async function BlogListPage({
       </div>
 
       <div className="stack-6">
-        <BlogSearch initialQuery={q} tag={tag} />
-
-        {/* 태그 필터 — 시안 A(사용자 승인 2026-07-02): 상위 8개 한 줄 + 나머지 더보기 토글 */}
-        {allTags.length > 0 && (
-          <div className="stack-2">
-            <div className="row" style={{ flexWrap: 'wrap' }}>
-              <Link href={hrefWith({ q })} className={tagClass(tag === '')}>
-                전체
-              </Link>
-              {primaryTags.map((t) => (
-                <Link key={t} href={hrefWith({ tag: t, q })} className={tagClass(tag === t)}>
-                  #{t}
-                </Link>
-              ))}
-            </div>
-            {restTags.length > 0 && (
-              <details className="accordion">
-                <summary>+{restTags.length} 더보기</summary>
-                <div className="accordion-body row" style={{ flexWrap: 'wrap' }}>
-                  {restTags.map((t) => (
-                    <Link key={t} href={hrefWith({ tag: t, q })} className={tagClass(tag === t)}>
-                      #{t}
-                    </Link>
-                  ))}
-                </div>
-              </details>
-            )}
-          </div>
-        )}
-
-        {/* 결과 요약 */}
-        {(q.trim() || tag) && (
-          <p className="text-muted">
-            {filtered.length > 0 ? `${filtered.length}개의 글` : '일치하는 글이 없습니다.'}
-            {tag && <span> · #{tag}</span>}
-            {q.trim() && <span> · “{q.trim()}”</span>}
-          </p>
-        )}
-
-        {posts.length === 0 ? (
-          <Empty title="아직 발행된 글이 없습니다" body="곧 새로운 글이 올라올 예정입니다." />
-        ) : pageItems.length === 0 ? (
-          <Empty title="조건에 맞는 글이 없습니다" body="다른 검색어나 태그를 시도해 보세요." />
-        ) : (
-          <div className="stack-6">
-            {pageItems.map((post) => (
-              <Link key={post.slug} href={`/blog/${post.slug}`} className="card card-link">
-                {post.tags && post.tags.length > 0 && (
-                  <span className="card-kicker">{post.tags.map((t) => `#${t}`).join(' ')}</span>
-                )}
-                <span className="card-title">{post.title}</span>
-                {post.description && <p className="card-body">{post.description}</p>}
-                <div className="card-meta">
-                  <time dateTime={post.date}>
-                    {post.date
-                      ? new Intl.DateTimeFormat('ko-KR', {
-                          year: 'numeric',
-                          month: 'long',
-                          day: 'numeric',
-                        }).format(new Date(post.date))
-                      : ''}
-                  </time>
-                  {/* 구분점도 함께 조건부 — 숫자만 지우면 날짜 뒤에 '·' 가 덩그러니 남는다. */}
-                  {views !== null && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span>{(views[post.slug] ?? 0).toLocaleString()} 조회</span>
-                    </>
-                  )}
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-
-        {/* 페이지네이션 */}
-        {totalPages > 1 && (
-          <nav className="pagination" aria-label="페이지 이동">
-            {current > 1 ? (
-              <Link href={hrefWith({ tag, q, page: current - 1 })} className="page-btn" aria-label="이전 페이지">
-                <ChevronLeft size={16} aria-hidden="true" />
-              </Link>
-            ) : (
-              <button type="button" className="page-btn" disabled aria-label="이전 페이지">
-                <ChevronLeft size={16} aria-hidden="true" />
-              </button>
-            )}
-
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
-              <Link
-                key={n}
-                href={hrefWith({ tag, q, page: n })}
-                aria-current={n === current ? 'page' : undefined}
-                className="page-btn"
-              >
-                {n}
-              </Link>
-            ))}
-
-            {current < totalPages ? (
-              <Link href={hrefWith({ tag, q, page: current + 1 })} className="page-btn" aria-label="다음 페이지">
-                <ChevronRight size={16} aria-hidden="true" />
-              </Link>
-            ) : (
-              <button type="button" className="page-btn" disabled aria-label="다음 페이지">
-                <ChevronRight size={16} aria-hidden="true" />
-              </button>
-            )}
-
-            <div className="spacer" />
-            <span className="text-muted">
-              {start + 1}–{Math.min(start + PER_PAGE, filtered.length)} / {filtered.length}건
-            </span>
-          </nav>
-        )}
+        {/* searchParams 를 await 하지 않고 Promise 그대로 넘긴다 — 머리글은 즉시 그려지고
+            DB 를 기다리는 부분만 골격으로 대체된다(상태 3종 중 "로딩"). */}
+        <Suspense fallback={<div className="stack-6"><CardSkeleton count={3} /></div>}>
+          <BlogListBody searchParams={searchParams} />
+        </Suspense>
       </div>
     </div>
   );

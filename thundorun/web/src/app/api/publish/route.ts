@@ -16,6 +16,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { getSupabase } from '@/lib/supabase';
 import { mdToHtml } from '@/lib/md-to-html';
 import { slugify, deriveDescription, isValidDate, todayISODate } from '@/lib/publish-format';
+import { normalizeStatus } from '@/lib/blog-status';
+import { revalidateBlog } from '@/server/blogCache';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,8 +77,17 @@ export async function POST(req: NextRequest) {
     return json(400, { ok: false, error: '유효한 slug 를 만들 수 없습니다. 영소문자·숫자·하이픈으로 된 slug 를 명시해 주세요(예: "my-post-title").' });
   }
 
-  // status
-  const status = body.status === 'draft' ? 'draft' : 'published';
+  // status — 화이트리스트로 받는다(draft | ready | published).
+  //
+  // 🔴 예전엔 `body.status === 'draft' ? 'draft' : 'published'` 였다. 사람 승인 관문이
+  //    생긴 뒤 이 코드는 **관문을 우회하는 구멍**이 된다 — status:'ready' 를 보내면
+  //    조용히 'published' 로 바뀌어 승인 없이 공개됐다. 오타('publised')도 마찬가지였다.
+  //
+  // ⚠ 미지정 기본값은 'published' 로 **유지한다**. 이 엔드포인트는 파이프라인이 쓰지 않고
+  //    (파이프라인은 hub/blog-db.mjs 로 직접 upsert 한다) 사람이 운용하는 외부 발행 API 라,
+  //    docs/EXTERNAL-BLOG-GUIDE.md 가 "즉시 라이브"로 공표한 계약을 말없이 바꾸면
+  //    기존 호출자의 글이 사이트에서 사라진다. 승인 관문을 태우려면 'ready' 를 명시한다.
+  const status = normalizeStatus(body.status, 'published');
 
   // date
   const date = body.date != null ? String(body.date) : todayISODate(new Date());
@@ -120,6 +131,16 @@ export async function POST(req: NextRequest) {
     return json(500, { ok: false, error: '발행 중 오류가 발생했습니다. 잠시 후 다시 시도하세요.' });
   }
 
+  /**
+   * 캐시 무효화 — 홈·상세·sitemap 은 ISR 이고 목록은 태그 캐시라, 쓰기 뒤에 버리지 않으면
+   * 최대 5분간 옛 화면이 남는다(server/blogCache.ts 에 무엇을 버리는지 적어 뒀다).
+   *
+   * ⚠ status 와 무관하게 부른다. 'ready' 로 들어온 글은 공개되지 않지만, **이미 공개돼 있던
+   *    글을 ready 로 내리는 덮어쓰기**(overwrite:true)가 가능하다. 그때 건너뛰면 내려간 글이
+   *    캐시에 남아 계속 보인다 — 조건은 "공개했는가"가 아니라 "공개 여부가 바뀔 수 있는가"다.
+   */
+  revalidateBlog(slug);
+
   return json(existing ? 200 : 201, {
     ok: true,
     slug,
@@ -144,7 +165,7 @@ export function GET() {
       description: { type: 'string', required: false, max: 200, desc: '메타 설명. 미지정 시 본문 첫 문단에서 자동 도출.' },
       tags:        { type: 'string[]', required: false, max_items: MAX_TAGS, desc: '태그 목록' },
       date:        { type: 'string(YYYY-MM-DD)', required: false, desc: '발행일. 미지정 시 오늘(UTC).' },
-      status:      { type: '"published" | "draft"', required: false, default: 'published' },
+      status:      { type: '"published" | "ready" | "draft"', required: false, default: 'published', desc: 'ready = 사람 승인 대기(사이트에 노출되지 않음). 관리자가 /admin 에서 승인해야 공개된다.' },
       overwrite:   { type: 'boolean', required: false, default: false, desc: '기존 slug 덮어쓰기 허용 여부(false 면 중복 시 409).' },
     },
     responses: {
@@ -162,6 +183,7 @@ export function GET() {
       '품질 게이트(길이·표절·AI티 등 15종)는 이 API 에서 실행되지 않는다 — 호출자가 사전 보장할 것.',
       'content 는 마크다운으로 보낸다. 원시 HTML 을 넣어도 텍스트로 escape 되어 렌더되지 않는다.',
       '이미지는 외부 URL(https)만 사용 가능(blog-publisher 로컬 /images 경로는 렌더 안 됨).',
+      "status 를 'ready' 로 보내면 발행되지 않고 관리자 승인 대기열에 들어간다 — 목록·상세·sitemap·RSS 어디에도 나오지 않는다.",
     ],
   });
 }

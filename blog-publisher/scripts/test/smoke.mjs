@@ -3,7 +3,7 @@
  * scripts/test/smoke.mjs — 간이 스모크 테스트
  *
  * 검증 항목:
- *   1. 게이트 16종이 샘플 초안에 대해 동작 (exit 0 or 1, not 2)
+ *   1. 게이트 전종이 샘플 초안에 대해 동작 (exit 0 or 1, not 2)
  *   2. run-all-gates 통합 실행 (JSON 출력 스키마 확인)
  *   3. run-lion mock 1회 성공 (발행 >= 1, 오류 0)
  *   4. audit verify-chain 무결성 ok
@@ -174,10 +174,17 @@ function makeSampleDraft() {
   return filepath;
 }
 
-// ─── 테스트 1: 게이트 6종 동작 확인 ─────────────────────────────────────────
+// ─── 테스트 1: 게이트 동작 확인 ─────────────────────────────────────────────
+
+/**
+ * run-all-gates 가 돌려야 할 게이트 수.
+ * 게이트를 늘리면 여기와 아래 GATES 목록 둘 다 고친다 — 개수만 맞고 목록이 안 늘면
+ * 새 게이트가 스모크에서 조용히 빠진다(거짓 green).
+ */
+const EXPECTED_GATE_COUNT = 17;
 
 async function testGates(samplePath) {
-  console.log('\n[1] 게이트 16종 동작 테스트');
+  console.log(`\n[1] 게이트 ${EXPECTED_GATE_COUNT}종 동작 테스트`);
 
   const gates = [
     'check-dup.mjs',
@@ -196,6 +203,7 @@ async function testGates(samplePath) {
     'check-render-fit.mjs',
     'check-seo.mjs',
     'check-source-fidelity.mjs',
+    'check-firsthand.mjs',
   ];
 
   for (const gate of gates) {
@@ -251,7 +259,7 @@ async function testRunAllGates(samplePath) {
     const result = JSON.parse(firstJson);
     if (typeof result.all_pass !== 'boolean') {
       fail('run-all-gates', 'all_pass 필드 없음');
-    } else if (!Array.isArray(result.gates) || result.gates.length !== 16) {
+    } else if (!Array.isArray(result.gates) || result.gates.length !== EXPECTED_GATE_COUNT) {
       fail('run-all-gates', `게이트 수 이상: ${result.gates?.length}`);
     } else {
       pass(`run-all-gates → all_pass=${result.all_pass}, gates=${result.gates.length}개`);

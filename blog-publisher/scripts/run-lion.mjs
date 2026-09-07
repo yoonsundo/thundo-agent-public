@@ -374,7 +374,8 @@ async function publishDraft(draft, gateResult, date, image = null) {
     '---',
     `title: "${draft.title}"`,
     `date: "${date}"`,
-    `status: published`,
+    // 🔴 `ready` 다 — 사람 승인 전에는 공개되지 않는다(2026-09-07 관문 도입).
+    `status: ready`,
     `slug: "${slug}"`,
     `writer: "${draft.writer}"`,
     `draft_id: "${draft.id}"`,

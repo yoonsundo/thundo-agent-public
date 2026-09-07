@@ -36,7 +36,9 @@ const ROW_LIMIT     = 5000;
 
 // ── 키 로드 ──────────────────────────────────────────────────────────────────
 
-function loadKey() {
+// export: index-inspect.mjs 가 같은 크리덴셜 규약(경로/JSON·둘 다 없으면 null)을 쓴다.
+// 크리덴셜 로딩을 복제하면 한쪽만 고쳐지는 사고가 난다.
+export function loadKey() {
   const keyPath = process.env.GSC_SA_KEY_PATH;
   const keyJson = process.env.GSC_SA_KEY_JSON;
 
@@ -72,6 +74,25 @@ function dateRange() {
   const startDate = new Date(endDate);
   startDate.setUTCDate(startDate.getUTCDate() - ROLLING + 1);
   return { startDate: isoDate(startDate), endDate: isoDate(endDate) };
+}
+
+/**
+ * 한 번의 수집 런(runDate 에 실행)이 GSC 에 물어본 날짜 구간.
+ *
+ * 왜 export 하는가: seo-metrics.jsonl 에는 **노출 0 인 날의 레코드가 아예 없다**
+ * (groupByDate 는 행이 있는 날짜만 만든다). 그래서 리포트가 "그날 노출 0회"와
+ * "그날은 수집조차 안 됐다"를 구분하려면 수집 창을 알아야 한다. 창 계산식이
+ * 여기(dateRange)에만 있으므로, 복제하지 않고 같은 상수를 쓰는 함수로 내보낸다.
+ *
+ * @param {string} runIsoDate 수집이 돌아간 날(레코드의 collected_at 날짜)
+ * @returns {{startDate:string,endDate:string}} 그 런이 조회한 구간(양끝 포함)
+ */
+export function collectionWindow(runIsoDate, lookback = LOOKBACK, rolling = ROLLING) {
+  const end = new Date(runIsoDate + 'T00:00:00Z');
+  end.setUTCDate(end.getUTCDate() - lookback);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - rolling + 1);
+  return { startDate: isoDate(start), endDate: isoDate(end) };
 }
 
 // ── seo-metrics.jsonl 헬퍼 (export: gsc-feedback, apply-targeting, cohort-report 공용) ─

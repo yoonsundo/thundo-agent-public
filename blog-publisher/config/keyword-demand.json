@@ -8,6 +8,17 @@
   "max_candidates": 60,
   "max_report_rows": 30,
   "min_demand_score": 0.05,
+  "min_demand_score_comment": "데이터랩 폴백 경로 전용 하한(앵커 대비 수요배율). 검색광고 경로에는 쓰지 않는다 — 그건 사실상 볼륨 하한이라 우리가 실제로 순위를 잡은 저볼륨 지대를 먼저 죽인다.",
+  "min_score": 0.15,
+  "min_score_comment": "검색광고 경로 candidates 하한(승산 점수 기준). 볼륨이 아니라 승산으로 자르므로 월 10짜리 롱테일도 기회가 크면 살아남는다.",
+  "winnability": {
+    "band_min": 100,
+    "band_max": 5000,
+    "below_slope": 0.3,
+    "below_floor": 0.35,
+    "above_slope": 3,
+    "comment": "점수 = 승산 × 볼륨tie-break × (0.5+기회). 기회가 거의 모든 행에서 상수 1.5 라 점수식이 '절대 검색량 순'으로 붕괴했던 것을 고친다(2026-09-07). 구간 안(월 100~5,000)은 승산 1.0, 아래로는 하한 0.35 까지 완만히, 위로는 로그거리 제곱으로 가파르게 감점 — 헤드텀은 져서 0이지만 롱테일은 이기면 조금이라도 먹기 때문에 비대칭이다."
+  },
   "candidates_ttl_days": 21,
   "ttl_comment": "candidates.json 이 이 일수보다 오래되면 apply-targeting 이 무시한다 — 주간 잡이 죽었을 때 낡은 수요로 계속 병합되는 것을 막는다.",
   "apply": {
@@ -21,6 +32,8 @@
   "searchad": {
     "enabled": true,
     "related_cap": 15,
+    "related_exclude": ["개발자", "ai개발자", "블록코딩", "코딩로봇", "ai로봇", "자동화설비", "코딩프로그램"],
+    "related_exclude_comment": "니치 필터(isNicheKeyword)는 '코딩·자동화·개발·ai' 라는 넓은 시드로 판정해서 다른 뜻까지 통과시킨다 — 블록코딩=아동교육, 자동화설비=공장, 코딩로봇=완구, 개발자=구인. 2026-09-07 실측 응답에서 실제로 승격된 것들이라 명시 제외한다. 의미 판정이 아니라 관측된 잡음 목록이니, 리포트의 searchad-rel 행을 보고 계속 늘려라.",
     "comment": "네이버 검색광고 키워드도구(절대 월간 검색량·연관키워드) — 주 수요 소스(2026-08-07 활성화, 데이터랩은 개발자센터 신규등록 차단으로 폴백 전용). env: NAVER_SEARCHAD_API_KEY / NAVER_SEARCHAD_SECRET / NAVER_SEARCHAD_CUSTOMER_ID"
   }
 }

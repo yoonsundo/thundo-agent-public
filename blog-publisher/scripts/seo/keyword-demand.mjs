@@ -157,6 +157,60 @@ export function finalScore(demand, opportunity) {
   return demand * (0.5 + opportunity);
 }
 
+/**
+ * 승산 곡선 기본값 — 월간검색수 기준(검색광고 경로에서만 의미가 있다).
+ *
+ * 왜 필요했나: 점수가 `수요배율 × (0.5+기회)` 였는데 기회가 거의 모든 행에서 상수 1.5 라
+ * 사실상 "절대 검색량 순"이 됐다. 그 결과 1위가 chatgpt(월 206만) 같은 도달 불가 헤드텀이고,
+ * 정작 우리가 3~10위를 실제로 먹은 지대(월 100 안팎, 상당수는 측정불능 <10)는 바닥에 깔렸다.
+ */
+export const DEFAULT_WINNABILITY = {
+  band_min: 100,      // 승산 구간 하단 — 이 아래는 트래픽이 얇아 서서히 감점
+  band_max: 5000,     // 승산 구간 상단 — 이 위는 대형 매체와 겨루는 구간이라 가파르게 감점
+  below_slope: 0.3,   // 하단 이탈 감점 기울기(로그 10배당)
+  below_floor: 0.35,  // 🔴 하한 — 0 으로 떨어뜨리지 않는다. 볼륨만으로 자르면 이기는 지대가 먼저 죽는다
+  above_slope: 3,     // 상단 이탈 감점 기울기(로그거리 제곱에 곱)
+};
+
+/**
+ * 승산 적합도 0~1 (순수) — 월간검색수가 "우리가 실제로 이길 수 있는 구간"에 있을수록 1.
+ * 구간 안이면 1.0, 아래로는 완만히(하한 있음), 위로는 제곱으로 가파르게 떨어진다.
+ * 비대칭인 이유: 볼륨이 작은 키워드는 이기면 조금이라도 먹지만, 헤드텀은 져서 0이다.
+ */
+export function volumeFitness(monthly, opts = {}) {
+  if (monthly == null) return null;
+  const o = { ...DEFAULT_WINNABILITY, ...opts };
+  const v = Math.max(Number(monthly) || 0, 1);
+  if (v >= o.band_min && v <= o.band_max) return 1;
+  if (v < o.band_min) {
+    const d = Math.log10(o.band_min / v);
+    return Math.max(o.below_floor, 1 - o.below_slope * d);
+  }
+  const d = Math.log10(v / o.band_max);
+  return 1 / (1 + o.above_slope * d * d);
+}
+
+/**
+ * 같은 승산 구간 안에서는 큰 쪽이 낫다 — 로그 눈금 tie-break 0~1 (순수).
+ * 곡선이 구간 안에서 평평(1.0)하기만 하면 월 100 과 월 5,000 이 동점이 되므로,
+ * 볼륨을 로그로 눌러 순서만 남긴다(선형 볼륨 지배가 되살아나지 않도록 상한 1).
+ */
+export function volumeTieBreak(monthly, opts = {}) {
+  if (monthly == null) return null;
+  const o = { ...DEFAULT_WINNABILITY, ...opts };
+  const v = Math.max(Number(monthly) || 0, 0);
+  return Math.min(1, Math.log10(1 + v) / Math.log10(1 + o.band_max));
+}
+
+/**
+ * 검색광고 경로 최종 점수 (순수) = 승산 × 볼륨tie-break × (0.5 + 기회).
+ * monthly null(=측정 못 함)은 null — 0(=아무도 안 검색함)과 구분한다.
+ */
+export function winnabilityScore({ monthly, opportunity = 0 }, opts = {}) {
+  if (monthly == null) return null;
+  return volumeFitness(monthly, opts) * volumeTieBreak(monthly, opts) * (0.5 + opportunity);
+}
+
 // ── 로컬 신호 로더 ───────────────────────────────────────────────────────────
 
 /** GSC query 차원 집계: query → {impressions, avgPosition} */
@@ -222,24 +276,39 @@ export function buildReport({ date, anchor, rows, calls, failures, measured }) {
   L.push(`# 검색 수요 키워드 리포트 — ${date}`);
   L.push('');
   const hasMonthly = rows.some(r => r.monthly != null);
-  L.push(`앵커: \`${anchor}\` (수요 점수 = ${hasMonthly ? '월간검색수' : '데이터랩 상대검색량'} ÷ 앵커, 즉 1.0 = 앵커와 같은 수요)`);
+  L.push(`앵커: \`${anchor}\` (수요 = ${hasMonthly ? '월간검색수' : '데이터랩 상대검색량'} ÷ 앵커, 즉 1.0 = 앵커와 같은 수요)`);
+  L.push(hasMonthly
+    ? '점수 = **승산** × 볼륨tie-break × (0.5 + 기회) — 볼륨 순이 아니다. 도달 불가 헤드텀은 승산에서 깎인다.'
+    : '점수 = 수요 × (0.5 + 기회) — 데이터랩 폴백(절대 볼륨이 없어 승산 곡선을 못 그린다).');
   L.push(`측정: 후보 ${measured}개 · ${hasMonthly ? '검색광고 키워드도구' : '데이터랩'} ${calls}콜 · 실패 배치 ${failures}`);
   L.push('');
-  L.push(`| # | 키워드 |${hasMonthly ? ' 월간검색수 |' : ''} 수요(×앵커) | 기회 | 점수 | 구글 평균순위 | 네이버 최고순위 | 출처 |`);
-  L.push(`|---|--------|${hasMonthly ? '-----------|' : ''}------------|------|------|--------------|----------------|------|`);
+  L.push(`| # | 키워드 |${hasMonthly ? ' 월간검색수 | 승산 |' : ''} 수요(×앵커) | 기회 | 점수 | 구글 평균순위 | 네이버 최고순위 | 출처 |`);
+  L.push(`|---|--------|${hasMonthly ? '-----------|------|' : ''}------------|------|------|--------------|----------------|------|`);
   rows.forEach((r, i) => {
-    const monthlyCell = hasMonthly ? ` ${r.monthly == null ? '—' : r.monthly.toLocaleString()} |` : '';
+    const monthlyCell = hasMonthly
+      ? ` ${r.monthly == null ? '측정불능' : r.monthly.toLocaleString()} | ${r.fitness == null ? '—' : r.fitness.toFixed(2)} |`
+      : '';
     L.push(`| ${i + 1} | ${mdCell(r.keyword)} |${monthlyCell} ${r.demand == null ? '측정불능' : r.demand.toFixed(2)} | ${r.opportunity.toFixed(1)} | ${r.score == null ? '—' : r.score.toFixed(2)} | ${fmtPos(r.google.avg_position)} | ${r.naver_best == null ? '미노출' : r.naver_best} | ${r.sources.join(',')} |`);
   });
   L.push('');
-  L.push('- **수요↑ + 미노출** 조합이 곧 기사 기회다. 상위 후보는 apply-targeting 이 niche_keywords 로 병합해 다음 글 주제 선정에 가중된다.');
+  L.push('- **승산 구간(대략 월 100~5,000) + 미노출** 조합이 곧 기사 기회다. 상위 후보는 apply-targeting 이 niche_keywords 로 병합해 다음 글 주제 선정에 가중된다.');
+  L.push('- 저볼륨(측정불능 <10 포함)은 감점되지만 **탈락하지 않는다** — 우리가 실제로 순위를 잡은 곳이 그 지대다.');
   L.push(`- 자동 생성: \`scripts/seo/keyword-demand.mjs\``);
   return L.join('\n');
 }
 
 // ── 메인 ─────────────────────────────────────────────────────────────────────
 
+/**
+ * dry-run — 실측은 그대로 하되 **아무 파일도 쓰지 않는다**(이력 append·candidates 덮어쓰기 없음).
+ * 점수식을 손볼 때 운영 산출물을 오염시키지 않고 순위를 확인하려고 만들었다.
+ */
+function isDryRun() {
+  return process.argv.includes('--dry-run') || process.env.KEYWORD_DEMAND_DRYRUN === '1';
+}
+
 async function main() {
+  const dryRun = isDryRun();
   const cfg = JSON.parse(readFileSync(CFG_PATH, 'utf8'));
   if (!cfg.enabled) { log.info('enabled=false — 스킵'); return 0; }
 
@@ -280,16 +349,22 @@ async function main() {
     }
     // 연관키워드 확장 — 후보에 없던 니치 키워드를 수요와 함께 얻는다(추가 콜 0회).
     const relCap = cfg.searchad?.related_cap ?? 15;
+    const excluded = new Set((cfg.searchad?.related_exclude || []).map(normKey));
     const known = new Set(candidates.map(c => normKey(c.keyword)));
-    let addedRel = 0;
+    let addedRel = 0, skippedRel = 0;
     for (const rel of sa.related) {
       if (addedRel >= relCap) break;
-      if (!isNicheKeyword(rel.keyword) || known.has(normKey(rel.keyword))) continue;
+      const k = normKey(rel.keyword);
+      if (!isNicheKeyword(rel.keyword) || known.has(k)) continue;
+      // isNicheKeyword 는 "코딩·자동화·개발·ai" 같은 넓은 시드로 판정해서, 우리 클러스터와
+      // 무관한 다른 뜻("블록코딩"=아동교육, "자동화설비"=공장, "코딩로봇"=완구)까지 통과시킨다.
+      // 여기서 걸러 두지 않으면 apply-targeting 이 그대로 niche_keywords 로 올려 주제 선정이 샌다.
+      if (excluded.has(k)) { skippedRel++; continue; }
       candidates.push({ keyword: rel.keyword.toLowerCase(), sources: ['searchad-rel'] });
-      known.add(normKey(rel.keyword));
+      known.add(k);
       addedRel++;
     }
-    if (addedRel) log.info(`연관키워드 확장: +${addedRel}개 (검색광고 응답 재활용, 추가 콜 없음)`);
+    if (addedRel || skippedRel) log.info(`연관키워드 확장: +${addedRel}개 (제외 ${skippedRel}개, 검색광고 응답 재활용, 추가 콜 없음)`);
 
     // 점수 축 통일: demand = 월간검색수 ÷ 앵커 월간검색수 (데이터랩과 같은 의미의 배율)
     const anchorTotal = sa.stats.get(normKey(anchor))?.total ?? 0;
@@ -297,13 +372,17 @@ async function main() {
     monthly = new Map();
     const scores = new Map();
     for (const { keyword } of candidates) {
-      const st = sa.stats.get(normKey(keyword));
-      const total = st ? st.total : 0;
+      // 🔴 sa.all — 요청분과 연관분이 함께 든 통. sa.stats 는 요청분만이라 위에서 승격한
+      //   searchad-rel 후보가 전원 미측정 취급됐다(6주간 리포트에 그 출처 행 0개).
+      const st = sa.all.get(normKey(keyword));
+      // 측정 못 한 것(응답에 없음)은 null 이다 — 0(=아무도 안 검색함)과 같은 칸에 두지 않는다.
+      const total = st ? st.total : null;
       monthly.set(keyword, total);
-      scores.set(keyword, anchorTotal > 0 ? total / anchorTotal : null);
+      scores.set(keyword, (anchorTotal > 0 && total != null) ? total / anchorTotal : null);
     }
+    const measuredRel = candidates.filter(c => c.sources.includes('searchad-rel') && monthly.get(c.keyword) != null).length;
     demand = { scores, calls: sa.calls, failures: sa.failures };
-    log.info(`검색광고 측정: ${sa.stats.size}개 실측, 앵커 월간검색수 ${anchorTotal}`);
+    log.info(`검색광고 측정: 요청분 ${sa.stats.size}개 · 연관 승격분 ${measuredRel}개 실측, 앵커 월간검색수 ${anchorTotal}`);
   } else {
     source = 'datalab';
     const creds = loadCreds(naverCfg);
@@ -325,16 +404,20 @@ async function main() {
   }
 
   const naverBest = loadNaverBest();
+  const winCfg = { ...DEFAULT_WINNABILITY, ...(cfg.winnability || {}) };
   const rows = candidates.map(({ keyword, sources }) => {
     const g = gscAgg.get(keyword) || { impressions: 0, avgPosition: null };
     const d = demand.scores.has(keyword) ? demand.scores.get(keyword) : null;
+    const mv = monthly ? (monthly.get(keyword) ?? null) : null;   // 검색광고일 때만: 절대 월간검색수
     const opportunity = scoreOpportunity({ googlePosition: g.avgPosition, naverBest: naverBest.get(keyword) ?? null });
     return {
       keyword, sources,
       demand: d,
-      monthly: monthly ? (monthly.get(keyword) ?? null) : null,   // 검색광고일 때만: 절대 월간검색수
+      monthly: mv,
       opportunity,
-      score: finalScore(d, opportunity),
+      // 절대 볼륨이 있으면 승산 곡선으로, 없으면(데이터랩 폴백) 기존 수요배율식으로.
+      fitness: monthly ? volumeFitness(mv, winCfg) : null,
+      score: monthly ? winnabilityScore({ monthly: mv, opportunity }, winCfg) : finalScore(d, opportunity),
       google: { impressions: g.impressions, avg_position: g.avgPosition },
       naver_best: naverBest.get(keyword) ?? null,
     };
@@ -342,16 +425,34 @@ async function main() {
 
   const date = new Date().toISOString().slice(0, 10);
 
-  // ① 이력 (append) — 추세 분석·자가발전 입력용
   const mock = isMockMode();
+
+  if (dryRun) {
+    // 파일 대신 stdout — 사람이 순위를 눈으로 확인하는 용도.
+    console.log(buildReport({
+      date, anchor: cfg.anchor_keyword,
+      rows: rows.slice(0, cfg.max_report_rows ?? 30),
+      calls: demand.calls, failures: demand.failures, measured: rows.length,
+    }));
+    log.info(`dry-run — 파일 미기록 (후보 ${rows.length}개 측정)`);
+    return 0;
+  }
+
+  // ① 이력 (append) — 추세 분석·자가발전 입력용
   appendFileSync(HISTORY_PATH, JSON.stringify({
     date, anchor: cfg.anchor_keyword, source, measured: rows.length,
     calls: demand.calls, failures: demand.failures, ...(mock ? { mock: true } : {}),
     top: rows.slice(0, 10).map(r => ({ keyword: r.keyword, demand: r.demand, monthly: r.monthly, score: r.score })),
   }) + '\n');
 
-  // ② applier 입력 — 수요 있는 것만. mock 표시는 loadDemandCandidates 가 실적용에서 거른다.
-  const items = rows.filter(r => r.score != null && r.demand >= (cfg.min_demand_score ?? 0.05)).slice(0, 20);
+  // ② applier 입력 — 점수가 남는 것만. mock 표시는 loadDemandCandidates 가 실적용에서 거른다.
+  // ⚠ 검색광고 경로에서 min_demand_score(=앵커 대비 수요배율 하한)를 쓰면 안 된다.
+  //   그건 사실상 볼륨 하한이라, 우리가 실제로 3~10위를 먹은 저볼륨 지대를 먼저 죽인다.
+  //   점수 자체가 이미 승산을 반영하므로 점수로 자른다. 데이터랩 폴백엔 절대 볼륨이 없어 기존 기준 유지.
+  const keep = monthly
+    ? (r) => r.score != null && r.score >= (cfg.min_score ?? 0.15)
+    : (r) => r.score != null && r.demand >= (cfg.min_demand_score ?? 0.05);
+  const items = rows.filter(keep).slice(0, 20);
   writeFileSync(CANDIDATES_PATH, JSON.stringify({
     generated_at: new Date().toISOString(), anchor: cfg.anchor_keyword, source, ...(mock ? { mock: true } : {}), items,
   }, null, 2));

@@ -13,6 +13,9 @@
  * 모든 함수는 비차단 — throw 대신 {ok:false} 반환. 파일 발행/런 종결에 영향 없음.
  *
  * 커버: blog_posts 에 cover 컬럼이 없으므로 content 선두에 ![alt](url) 마크다운으로 임베드.
+ *
+ * 공개 상태(status): 2026-09-07 사람 승인 관문 도입. 새 글은 'ready'(승인대기)로 들어가고
+ * 관리자가 사이트에서 승인해야 'published' 가 된다. 자세한 계약은 DEFAULT_POST_STATUS 주석.
  */
 
 import { readFileSync, readdirSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
@@ -29,6 +32,20 @@ const log = makeLogger('hub/blog-db');
 
 function dbUrl()  { return env('NEXT_PUBLIC_SUPABASE_URL') || env('SUPABASE_URL'); }
 function dbKey()  { return env('SUPABASE_SERVICE_ROLE_KEY') || env('SUPABASE_SERVICE_ROLE'); }
+
+/**
+ * 새 글의 기본 공개 상태 — 'ready'(승인대기).
+ *
+ * 왜 'published' 가 아닌가: 74일간 203편을 사람 검토 없이 즉시 공개했고, 구글 8월 스팸
+ * 업데이트("편집 감독 제한된 대량 생산")를 정면으로 맞았다(하루 노출 15.6회 → 1회).
+ * 이제 파이프라인은 **제작까지만** 하고, 공개는 관리자가 사이트에서 승인할 때 일어난다.
+ * frontmatter 가 status 를 명시하면 그 값을 쓴다(기존 published/*.md 는 전부 명시돼 있어
+ * 백필이 영향받지 않는다).
+ *
+ * ⚠ DB 스키마의 컬럼 기본값은 아직 'published' 다(blog_posts.sql). 그래서 upsert 페이로드에서
+ *   status 를 빼면 안 된다 — 빠지면 DB 기본값이 먹어 그대로 공개된다. 항상 명시해 보낸다.
+ */
+export const DEFAULT_POST_STATUS = 'ready';
 
 /**
  * blog_posts DB 쓰기 가능 여부.
@@ -190,7 +207,8 @@ export function parsePublishedPost(filepath) {
     slug,
     title:       String(fm.title),
     date,
-    status:      fm.status || 'published',
+    // frontmatter 명시값 우선, 없으면 승인대기('ready'). 예전 기본값은 'published' 였다.
+    status:      fm.status || DEFAULT_POST_STATUS,
     description: deriveDescription(body),
     tags,
     content,
@@ -200,20 +218,72 @@ export function parsePublishedPost(filepath) {
 // ─── upsert ───────────────────────────────────────────────────────────────────
 
 /**
+ * fetchExistingStatus(slug) → { ok, status }
+ *   ok:true  — 조회 성공. status 는 문자열이거나, 행이 없으면 null.
+ *   ok:false — **모른다**(네트워크·권한·HTTP 실패). reason 에 이유.
+ *
+ * "행 없음(null)" 과 "조회 실패(모름)" 를 절대 합치지 않는다. 둘을 같게 다루면
+ * 일시적 조회 실패가 "새 글이네" 로 읽혀 살아 있는 글을 승인대기로 강등한다.
+ */
+async function fetchExistingStatus(slug) {
+  const base = dbUrl().replace(/\/$/, '');
+  const key = dbKey();
+  try {
+    const res = await fetch(`${base}/rest/v1/blog_posts?slug=eq.${encodeURIComponent(slug)}&select=status`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal:  AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return { ok: false, reason: 'unexpected body' };
+    const status = rows.length && typeof rows[0]?.status === 'string' ? rows[0].status : null;
+    return { ok: true, status };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+/**
  * publishPostToDb(post) → { ok, mode, slug, reason? }
  * post: parsePublishedPost 결과(또는 동형 객체). 비차단.
+ *
+ * 🔴 **이미 공개된 글은 재발행으로 강등되지 않는다.** 이 함수는 신규 발행뿐 아니라
+ *    수정 반영(재적재)·백필에도 쓰인다. 기본값이 'ready' 가 된 뒤로는, status 없는 글을
+ *    다시 올리는 것만으로 사이트에서 살아 있는 글이 사라질 수 있었다.
+ *    그래서 들어온 status 가 'published' 가 아닐 때만 기존 행을 먼저 조회해,
+ *    이미 'published' 면 그대로 둔다. 조회에 실패하면(모름) 쓰지 않고 물러난다 —
+ *    호출부는 비차단이라 다음 런에서 다시 시도한다(publish-pending-drafts 는 멱등).
+ *    의도적 비공개는 관리자 화면에서 한다. 스크립트로 꼭 해야 하면 BLOG_DB_ALLOW_UNPUBLISH=1.
  */
 export async function publishPostToDb(post) {
   if (!post || !post.slug) return { ok: false, reason: 'invalid post' };
 
+  // status 는 여기서 한 번 더 정규화한다 — 손으로 만든 post 객체가 status 를 빠뜨리면
+  // 페이로드에서 컬럼이 통째로 빠지고 DB 기본값('published')이 먹어 그대로 공개된다.
+  const desired = typeof post.status === 'string' && post.status ? post.status : DEFAULT_POST_STATUS;
+  let row = { ...post, status: desired };
+
   if (!isBlogDbEnabled()) {
     // 폴백: 로컬 JSONL 기록(mock-first, dry)
     try {
-      appendFileSync(fallbackPath(), JSON.stringify({ ...post, _ts: new Date().toISOString() }) + '\n', 'utf8');
+      appendFileSync(fallbackPath(), JSON.stringify({ ...row, _ts: new Date().toISOString() }) + '\n', 'utf8');
       log.info(`blog_posts DB 비활성 — JSONL 폴백 기록(dry): ${post.slug}`);
-      return { ok: true, mode: 'fallback-jsonl', slug: post.slug };
+      return { ok: true, mode: 'fallback-jsonl', slug: post.slug, status: row.status };
     } catch (e) {
       return { ok: false, mode: 'fallback-jsonl', slug: post.slug, reason: e.message };
+    }
+  }
+
+  // 강등 방향일 때만 기존 상태를 확인한다(승격 방향은 확인 불필요 — 호출 1회 절약).
+  if (desired !== 'published' && env('BLOG_DB_ALLOW_UNPUBLISH') !== '1') {
+    const found = await fetchExistingStatus(post.slug);
+    if (!found.ok) {
+      log.warn(`기존 status 조회 실패 — upsert 보류(강등 위험): ${post.slug} — ${found.reason}`);
+      return { ok: false, mode: 'supabase', slug: post.slug, reason: `status precheck failed: ${found.reason}` };
+    }
+    if (found.status === 'published') {
+      log.info(`이미 공개된 글 — status 보존(published): ${post.slug}`);
+      row = { ...row, status: 'published' };
     }
   }
 
@@ -229,7 +299,7 @@ export async function publishPostToDb(post) {
         'Content-Type':  'application/json',
         Prefer:          'resolution=merge-duplicates,return=minimal',
       },
-      body:   JSON.stringify([post]),
+      body:   JSON.stringify([row]),
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
@@ -237,8 +307,8 @@ export async function publishPostToDb(post) {
       log.warn(`blog_posts upsert HTTP ${res.status}: ${detail.slice(0, 200)}`);
       return { ok: false, mode: 'supabase', slug: post.slug, reason: `HTTP ${res.status}` };
     }
-    log.info(`blog_posts upsert 완료: ${post.slug}`);
-    return { ok: true, mode: 'supabase', slug: post.slug };
+    log.info(`blog_posts upsert 완료: ${post.slug} (status=${row.status})`);
+    return { ok: true, mode: 'supabase', slug: post.slug, status: row.status };
   } catch (e) {
     log.warn(`blog_posts upsert 예외: ${e.message}`);
     return { ok: false, mode: 'supabase', slug: post.slug, reason: e.message };

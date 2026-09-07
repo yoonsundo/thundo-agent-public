@@ -3,8 +3,22 @@
  * blog_posts 테이블: slug(PK), title, date, status, description, tags(jsonb), content
  * service_role RLS — getSupabase() 사용.
  * getAllPosts() / getPost() 는 async 함수.
+ *
+ * 🔴 이 파일의 모든 조회는 status=PUBLIC_STATUS('published') 로 거른다 — 사람이 승인하지
+ *    않은 글(ready)이 목록·상세·RSS·llms.txt 어디에도 새지 않게 하는 경계다(2026-09-07).
  */
+import { unstable_cache } from 'next/cache';
 import { getSupabase } from '@/lib/supabase';
+import { PUBLIC_STATUS } from '@/lib/blog-status';
+
+/**
+ * 블로그 데이터 캐시 태그. 승인·발행·삭제 API 가 `revalidateTag(BLOG_CACHE_TAG)` 로 버린다.
+ * 태그 문자열을 두 곳에 복제하면 한쪽만 고쳐져 캐시가 영영 안 버려지므로 상수로 잠근다.
+ */
+export const BLOG_CACHE_TAG = 'blog-posts';
+
+/** 목록 캐시 수명(초). 홈 ISR(revalidate=300)과 같은 값 — 화면마다 신선도가 다르면 설명이 안 된다. */
+export const BLOG_CACHE_TTL = 300;
 
 export interface Post {
   slug:         string;
@@ -14,6 +28,13 @@ export interface Post {
   tags?:        string[];
   status:       string;
   content:      string;       // 발행 시 mdToHtml 로 변환된 시맨틱 HTML (render-fit 게이트 통과분)
+  /**
+   * 사람 검수 기록. **없으면 null 이다 — 빈 문자열이나 '알 수 없음' 으로 채우지 않는다.**
+   * 승인 관문(2026-09-07) 이전에 자동 발행된 207편은 실제로 검수자가 없어 null 이고,
+   * 화면·JSON-LD 는 값이 있을 때만 검수자를 말한다("검수자 없음"과 "기록 이전"의 구분).
+   */
+  approvedBy?:  string | null;
+  approvedAt?:  string | null;  // ISO timestamptz
 }
 
 /** 발행 글 전체 목록 (date 내림차순). Supabase 미연결 시 빈 배열. */
@@ -24,7 +45,7 @@ export async function getAllPosts(): Promise<Post[]> {
   const { data, error } = await db
     .from('blog_posts')
     .select('slug, title, date, status, description, tags, content')
-    .eq('status', 'published')
+    .eq('status', PUBLIC_STATUS)
     .order('date', { ascending: false });
 
   if (error || !data) return [];
@@ -55,7 +76,7 @@ export async function getPostSummaries(): Promise<PostSummary[]> {
   const { data, error } = await db
     .from('blog_posts')
     .select('slug, title, date, status, description, tags')   // content 제외
-    .eq('status', 'published')
+    .eq('status', PUBLIC_STATUS)
     .order('date', { ascending: false });
 
   if (error || !data) return [];
@@ -68,6 +89,24 @@ export async function getPostSummaries(): Promise<PostSummary[]> {
     tags:        Array.isArray(row.tags) ? (row.tags as string[]) : [],
   }));
 }
+
+/**
+ * getCachedPostSummaries() — getPostSummaries 를 Next 데이터 캐시에 태그와 함께 담은 것.
+ *
+ * 왜 필요한가: `/blog` 목록은 ISR 로 만들 수 없다. `searchParams`(tag·q·page)를 서버에서
+ * 읽는 순간 그 라우트는 요청마다 동적으로 렌더된다 — 캐시된 HTML 하나로 `?tag=AI` 와
+ * `?page=3` 을 동시에 만족시킬 수 없기 때문이다. 그래서 **HTML 이 아니라 데이터**를 캐시한다.
+ * 207편 메타를 매 요청 DB 에서 새로 끌어오던 왕복이 사라진다(실측 TTFB 1.52s).
+ *
+ * 신선도 계약은 홈 ISR 과 같다 — 최대 BLOG_CACHE_TTL 초, 그전이라도 승인·발행·삭제 API 가
+ * `revalidateTag(BLOG_CACHE_TAG)` 로 즉시 버린다. 승인 직후 목록에 안 뜨면 관문이 고장 난
+ * 것처럼 보이므로 이 무효화가 캐시 도입의 전제다.
+ */
+export const getCachedPostSummaries = unstable_cache(
+  getPostSummaries,
+  ['blog-post-summaries'],
+  { revalidate: BLOG_CACHE_TTL, tags: [BLOG_CACHE_TAG] },
+);
 
 /**
  * PostgREST or-필터 값 정리 — 쉼표·괄호는 필터 문법의 구분자라 값에 들어가면 쿼리가 깨진다.
@@ -104,7 +143,7 @@ export async function searchPostSlugs(query: string): Promise<Set<string> | null
   const { data, error } = await db
     .from('blog_posts')
     .select('slug')                       // slug 만 — 본문은 DB 안에서만 훑는다
-    .eq('status', 'published')
+    .eq('status', PUBLIC_STATUS)
     .or(`title.ilike.${pattern},description.ilike.${pattern},content.ilike.${pattern}`);
 
   if (error || !data) return new Set();
@@ -151,16 +190,20 @@ export function pickRelated(
   return related;
 }
 
-/** 단일 글 조회 (status 무관 — 상세 페이지는 published 만). */
+/**
+ * 단일 글 조회 — **published 만** 준다.
+ * 승인 대기(ready)·초안(draft)은 slug 를 직접 쳐도 404 다. 관리자 검수는
+ * /api/admin/blog?slug=… (관리 경로)로 본다 — 공개 경로와 관리 경로는 분리돼 있다.
+ */
 export async function getPost(slug: string): Promise<Post | null> {
   const db = getSupabase();
   if (!db) return null;
 
   const { data, error } = await db
     .from('blog_posts')
-    .select('slug, title, date, status, description, tags, content')
+    .select('slug, title, date, status, description, tags, content, approved_by, approved_at')
     .eq('slug', slug)
-    .eq('status', 'published')
+    .eq('status', PUBLIC_STATUS)
     .maybeSingle();
 
   if (error || !data) return null;
@@ -173,5 +216,8 @@ export async function getPost(slug: string): Promise<Post | null> {
     tags:        Array.isArray(data.tags) ? (data.tags as string[]) : [],
     status:      String(data.status ?? 'published'),
     content:     String(data.content ?? ''),
+    // 없는 사실은 null 로 둔다 — `?? ''` 로 채우면 화면이 "검수: (빈칸)" 을 그리게 된다.
+    approvedBy:  data.approved_by ? String(data.approved_by) : null,
+    approvedAt:  data.approved_at ? String(data.approved_at) : null,
   };
 }

@@ -1,18 +1,49 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ChevronLeft, ChevronRight, Eye } from 'lucide-react';
-import { getPost, getPostSummaries, pickRelated } from '@/lib/blog';
-import { getBlogViews } from '@/server/blogViews';
-import { isAdminViewer } from '@/server/adminViewer';
+import { ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react';
+import { getPost, getCachedPostSummaries, pickRelated } from '@/lib/blog';
 import { parseFaq } from '@/lib/faq';
 import HtmlView from '@/components/HtmlView';
 import PrintButton from '@/components/PrintButton';
 import ShareButtons from '@/components/ShareButtons';
 import RelatedPosts from '@/components/RelatedPosts';
+import AdminBlogViews from '@/components/AdminBlogViews';
 import { buildToc } from '@/lib/toc';
 
-// DB 기반 — 정적 사전생성 불필요, 요청 시 서버 렌더
-export const dynamic = 'force-dynamic';
+/**
+ * ISR 5분 — 글 상세는 요청별 입력(쿼리·쿠키)이 없으므로 정적 재검증으로 충분하다.
+ *
+ * 왜 바꿨나: 예전엔 `force-dynamic` 이라 매 요청이 `no-store` + `x-vercel-cache: MISS` 였다
+ * (실측 TTFB 0.63초, ISR 인 홈은 0.15초). 크롤러가 207편을 도는 사이트에서 이 차이는
+ * 크롤 예산 그대로다.
+ *
+ * ⚠ 승인 관문과 충돌하지 않게 하는 것이 조건이다. 5분을 기다리면 "승인했는데 안 보인다"가
+ *    되고, 미승인 글은 notFound() → **404 응답까지 캐시된다**. 그래서 `/api/admin/blog` 의
+ *    승인(PATCH)·저장(POST)·삭제가 `revalidatePath('/blog/<slug>')` 로 그 글의 캐시를 즉시
+ *    버린다. 무효화를 승인 API 에 두는 이유는 공개 여부가 바뀌는 지점이 거기 하나이기
+ *    때문이다 — 페이지 쪽 revalidate 를 짧게 주는 방식은 "즉시 반영"과 "캐시 효과"를 동시에
+ *    가질 수 없다. (2026-08-28 홈 ISR 에서 같은 문제를 같은 처방으로 고쳤다.)
+ *
+ * 🔴 조회수를 서버에서 읽지 않는다. ISR 캐시는 전 방문자가 공유해 세션별 분기가 불가능하다
+ *    — 서버에서 조건부로 그리면 먼저 온 사람의 화면이 캐시에 굳는다. 관리자만 클라이언트
+ *    (AdminBlogViews)에서 따로 받아 온다.
+ */
+export const revalidate = 300;
+
+/**
+ * 빈 배열 + dynamicParams(기본 true) = "빌드 때는 하나도 미리 만들지 않되, 요청이 오면
+ * 만들어서 캐시한다".
+ *
+ * 🔴 이 선언이 없으면 Next 는 `[slug]` 를 순수 동적 라우트로 보고 위의 revalidate 를 **무시**한다
+ *    (실측: 빌드 표의 Revalidate 열이 비고 응답이 `no-store` 로 나갔다 — ISR 을 켠 줄 알았는데
+ *    아무것도 안 바뀐 상태였다). 선언을 넣자 `s-maxage=300` 으로 바뀌었다.
+ *
+ * 207편을 빌드 시점에 미리 만들지 않는 이유: 승인은 배포와 무관하게 아무 때나 일어나므로
+ * 빌드 때 뽑은 목록은 그날로 낡는다. 첫 요청에서 만들고, 승인 API 가 그 글만 무효화한다.
+ */
+export function generateStaticParams(): { slug: string }[] {
+  return [];
+}
 
 const BASE = 'https://www.thundo.kr';
 
@@ -66,11 +97,9 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
   const { slug } = await params;
   const post = await getPost(slug);
   if (!post) notFound();
-  // 조회수는 관리자에게만 — 비관리자면 DB 조회조차 하지 않는다(유출 차단 + 왕복 1회 절약).
-  const views = (await isAdminViewer()) ? await getBlogViews(slug) : null;
 
   // 관련글·인접글용 경량 메타(본문 제외). date 내림차순.
-  const summaries = await getPostSummaries();
+  const summaries = await getCachedPostSummaries();
   const related = pickRelated(
     { slug: post.slug, title: post.title, date: post.date, description: post.description, tags: post.tags },
     summaries,
@@ -84,16 +113,41 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
   // BlogPosting JSON-LD
   const canonicalUrl = `${BASE}/blog/${slug}`;
   const isoDate = post.date ? `${post.date}T00:00:00+09:00` : undefined;
+
+  /**
+   * 사람 검수 기록 — **있을 때만** 말한다.
+   *
+   * 🔴 승인 관문(2026-09-07) 이전에 자동 발행된 207편은 approved_by 가 null 이다. 백필하지
+   *    않았다 — 실제로 사람이 검수한 적이 없기 때문이다. 여기에 아무 이름이나 채우면 구조화
+   *    데이터로 거짓을 말하는 것이고, 그건 8월 스팸 업데이트가 겨냥한 바로 그 행위다.
+   *    둘 다 있을 때만 표시한다(이름만 있고 시각이 없으면 기록이 깨진 것이므로 믿지 않는다).
+   */
+  const reviewer = post.approvedBy && post.approvedAt
+    ? { name: post.approvedBy, at: post.approvedAt }
+    : null;
+
   const blogPostingLd = {
     '@context':        'https://schema.org',
     '@type':           'BlogPosting',
     headline:          post.title,
     description:       post.description ?? post.title,
     datePublished:     isoDate,
-    dateModified:      isoDate,   // 수정 이력 미추적 → 발행일과 동일(정직한 기본값)
+    // 사람이 검수해 공개한 시각이 곧 마지막으로 손댄 시각이다. 기록이 없으면 발행일과 동일
+    // (수정 이력을 따로 추적하지 않으므로 그게 정직한 기본값이다).
+    dateModified:      reviewer?.at ?? isoDate,
     author:            { '@type': 'Person', name: 'Thundo' },
     publisher:         { '@id': `${BASE}/#organization` },   // 루트 layout 의 전역 Organization 참조
-    mainEntityOfPage:  { '@type': 'WebPage', '@id': canonicalUrl },
+    // ⚠ schema.org 에서 reviewedBy·lastReviewed 의 정의역은 WebPage 다. BlogPosting 에도
+    //    같이 다는 것은 소비자(검색엔진)마다 읽는 노드가 달라서인데, 정본은 이 WebPage 쪽이다.
+    mainEntityOfPage:  {
+      '@type': 'WebPage',
+      '@id':   canonicalUrl,
+      ...(reviewer ? {
+        reviewedBy:   { '@type': 'Person', name: reviewer.name },
+        lastReviewed: reviewer.at,
+      } : {}),
+    },
+    ...(reviewer ? { reviewedBy: { '@type': 'Person', name: reviewer.name } } : {}),
     inLanguage:        'ko',
     ...(post.tags?.length ? { keywords: post.tags.join(', ') } : {}),
   };
@@ -129,6 +183,13 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
         month: 'long',
         day:   'numeric',
       }).format(new Date(post.date))
+    : '';
+
+  // 검수일 표기 — approved_at 은 timestamptz(UTC)라 KST 로 읽어야 승인한 날과 같은 날이 된다.
+  const reviewedDate = reviewer
+    ? new Intl.DateTimeFormat('ko-KR', {
+        year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Seoul',
+      }).format(new Date(reviewer.at))
     : '';
 
   // 본문 헤딩에서 목차 추출 + id 주입. H3 는 직전 H2 아래로 중첩.
@@ -175,15 +236,19 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
             <h1 className="page-title">{post.title}</h1>
             <p className="page-sub row">
               <time dateTime={post.date}>{formattedDate}</time>
-              {/* 구분점도 함께 조건부 — 숫자만 지우면 날짜 뒤에 '·' 가 덩그러니 남는다. */}
-              {views !== null && (
+              {/* 검수 기록이 있는 글만 검수자를 밝힌다. 없는 글은 이 줄 자체가 없다 —
+                  구분점까지 조건부로 묶지 않으면 날짜 뒤에 '·' 가 덩그러니 남는다. */}
+              {reviewer && (
                 <>
                   <span aria-hidden="true">·</span>
                   <span className="row">
-                    <Eye size={14} aria-hidden="true" /> {views.toLocaleString()} 조회
+                    <ShieldCheck size={14} aria-hidden="true" />
+                    검수: {reviewer.name} · <time dateTime={reviewer.at}>{reviewedDate}</time>
                   </span>
                 </>
               )}
+              {/* 조회수는 관리자만 — 서버가 아니라 클라이언트에서 받아 온다(ISR 캐시 공유). */}
+              <AdminBlogViews slug={slug} />
             </p>
           </div>
           <div className="page-actions" data-noprint>
@@ -255,6 +320,18 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
 
           {/* 관련 글 */}
           <RelatedPosts posts={related} />
+
+          {/* 편집 정책 — 이 글이 어떻게 만들어지고 누가 검수했는지로 가는 문.
+              검수 기록이 없는 글(관문 이전 207편)에도 필요하다: 검수자를 못 밝히는 이유까지
+              정책 페이지가 설명하므로, 여기서 링크를 감추면 오히려 설명이 사라진다. */}
+          <aside className="card card-outline" data-noprint>
+            <span className="card-kicker">이 글은 이렇게 만들어졌습니다</span>
+            <p className="card-body">
+              AI 에이전트가 초안을 쓰고, 자동 게이트와 검증 에이전트를 통과한 글만 사람이 검수해
+              공개합니다.{' '}
+              <Link href="/editorial-policy">편집 정책 · AI 사용 고지 · 정정 절차</Link>
+            </p>
+          </aside>
 
           {/* 뒤로가기 */}
           <div data-noprint>

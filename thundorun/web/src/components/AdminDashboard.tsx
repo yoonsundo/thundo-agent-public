@@ -19,7 +19,8 @@ import Empty from '@/components/state/Empty';
 import ErrorState from '@/components/state/ErrorState';
 import { CardSkeleton, TableSkeleton } from '@/components/state/Skeleton';
 import ConfirmDialog from '@/app/admin/ConfirmDialog';
-import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { statusLabel, type BlogStatus } from '@/lib/blog-status';
 
 // ─── 타입 ─────────────────────────────────────────────────────────────────────
 interface BriefingRecord {
@@ -41,17 +42,21 @@ interface BlogPost {
   slug:         string;
   title:        string;
   date:         string;
-  status:       'published' | 'draft';
+  /** ready = 파이프라인이 만들어 놓고 사람 승인을 기다리는 글(공개 경로엔 안 나온다). */
+  status:       BlogStatus;
   description?: string;
   tags?:        string[];
   views?:       number;   // traffic_pv 합산 조회수 (/api/admin/blog 목록에 부착)
+  /** 승인한 관리자·시각. 미승인이거나 관문 도입 이전 글은 null(빈 문자열이 아니다). */
+  approved_by?: string | null;
+  approved_at?: string | null;
 }
 
 interface BlogForm {
   slug:        string;
   title:       string;
   date:        string;
-  status:      'published' | 'draft';
+  status:      BlogStatus;
   description: string;
   tags:        string;   // 쉼표 구분 문자열
   content:     string;
@@ -166,6 +171,7 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
   const [blogSaveResult,setBlogSaveResult]= useState('');
   const [blogSaveError, setBlogSaveError] = useState(false);
   const [blogDeleting,  setBlogDeleting]  = useState<string | null>(null);
+  const [blogApproving, setBlogApproving] = useState<string | null>(null);
   const [blogConfirm,   setBlogConfirm]   = useState<BlogPost | null>(null);
   const [blogPage,      setBlogPage]      = useState(1);
   const [blogSort,      setBlogSort]      = useState<{ key: BlogSortKey; dir: 'asc' | 'desc' } | null>(null);
@@ -340,7 +346,7 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
       const res  = await fetch(`/api/admin/blog?slug=${encodeURIComponent(slug)}`);
       if (!res.ok) return;
       const data = await res.json() as {
-        slug: string; title: string; date: string; status: 'published' | 'draft';
+        slug: string; title: string; date: string; status: BlogStatus;
         description?: string; tags?: string[]; content?: string;
       };
       setBlogForm({
@@ -401,6 +407,31 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
     }
   }, [blogForm, loadBlogPosts, J]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * 상태만 바꾼다(승인 = ready → published). 본문을 왕복시키지 않는 PATCH 를 쓴다 —
+   * 목록에는 content 가 없어서 upsert 로 승인하면 빈 본문으로 글을 덮어쓸 수 있다.
+   */
+  const setBlogStatus = useCallback(async (slug: string, status: BlogStatus) => {
+    setBlogApproving(slug);
+    setBlogSaveError(false);
+    try {
+      const res  = await fetch('/api/admin/blog', { method: 'PATCH', headers: J, body: JSON.stringify({ slug, status }) });
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
+      if (res.ok) {
+        setBlogSaveResult(status === 'published' ? '승인했습니다 — 이제 사이트에 공개됩니다.' : '상태를 바꿨습니다.');
+        await loadBlogPosts();
+      } else {
+        setBlogSaveResult(data.error ?? '승인에 실패했습니다.');
+        setBlogSaveError(true);
+      }
+    } catch (e) {
+      setBlogSaveResult(`오류: ${(e as Error).message}`);
+      setBlogSaveError(true);
+    } finally {
+      setBlogApproving(null);
+    }
+  }, [loadBlogPosts, J]);
+
   const deleteBlogPost = useCallback(async (slug: string) => {
     setBlogConfirm(null);
     setBlogDeleting(slug);
@@ -430,6 +461,12 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
     blogSort?.key === key ? (blogSort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
   const toggleBlogSort = (key: BlogSortKey) =>
     setBlogSort((cur) => (cur?.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+
+  // 승인 대기 — 오래 기다린 것부터(날짜 오름차순). 이 목록이 이 탭의 '할 일'이다.
+  const blogPending = useMemo(
+    () => blogPosts.filter((p) => p.status === 'ready').sort((a, b) => a.date.localeCompare(b.date)),
+    [blogPosts],
+  );
 
   // 빈 상태(Empty)가 렌더되는 조건 — 이때만 주 액션이 빈 상태로 넘어간다(§4.4·§4.14).
   const blogIsEmpty = !blogLoadErr && !blogLoading && blogPosts.length === 0;
@@ -841,6 +878,45 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
               </div>
             )}
 
+            {/* 승인 대기 — 파이프라인 산출물은 여기서 사람이 승인해야 공개된다.
+                대기가 0건이면 섹션 자체를 그리지 않는다(빈 카드가 상시 자리를 먹지 않게). */}
+            {blogPending.length > 0 && (
+              <div className="card stack">
+                <div className="section-head">
+                  <h4 id="blog-pending-head">승인 대기 {blogPending.length}편</h4>
+                  <span className="text-muted">
+                    승인 전에는 목록·검색·사이트맵·RSS 어디에도 나오지 않습니다.
+                  </span>
+                </div>
+                <ul className="stack" aria-labelledby="blog-pending-head" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {blogPending.map((post) => (
+                    <li className="row" key={post.slug} style={{ gap: 'var(--space-2)' }}>
+                      <span className="tag tag-accent">승인 대기</span>
+                      <span style={{ minWidth: 0, flex: 1 }}>{post.title || post.slug}</span>
+                      <span className="text-muted">{post.date}</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => void openEditBlog(post.slug)}
+                      >
+                        <Pencil size={16} aria-hidden />
+                        검수
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={blogApproving === post.slug}
+                        onClick={() => void setBlogStatus(post.slug, 'published')}
+                      >
+                        <Check size={16} aria-hidden />
+                        승인
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {blogLoadErr ? (
               <ErrorState detail={blogLoadErr} onRetry={() => void loadBlogPosts()} />
             ) : !blogLoading && blogPosts.length === 0 ? (
@@ -875,9 +951,14 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
                         {blogPagePosts.map((post) => (
                           <tr key={post.slug}>
                             <td>
-                              <span className={post.status === 'published' ? 'tag tag-success' : 'tag tag-warning'}>
-                                {post.status === 'published' ? '발행됨' : '초안'}
+                              <span className={statusLabel(post.status).tone}>
+                                {statusLabel(post.status).text}
                               </span>
+                              {/* 검수자 표시 — 승인 기록이 있을 때만. 없는 사실을 지어내지 않는다
+                                  (관문 도입 이전 207편은 실제로 승인자가 없어 null 이다). */}
+                              {post.status === 'published' && post.approved_by && (
+                                <span className="text-muted"> 승인 {post.approved_by}</span>
+                              )}
                             </td>
                             <td>{post.title || '(제목 없음)'}</td>
                             <td className="text-mono">{post.slug}</td>
@@ -1018,11 +1099,13 @@ export default function AdminDashboard({ adminId }: { adminId: string }) {
                     id="bg-status"
                     className="input"
                     value={blogForm.status}
-                    onChange={e => setBlogForm(p => p ? { ...p, status: e.target.value as 'published' | 'draft' } : p)}
+                    onChange={e => setBlogForm(p => p ? { ...p, status: e.target.value as BlogStatus } : p)}
                   >
                     <option value="draft">초안 (draft)</option>
+                    <option value="ready">승인 대기 (ready)</option>
                     <option value="published">발행 (published)</option>
                   </select>
+                  <span className="field-hint">공개되는 것은 발행(published) 뿐입니다.</span>
                 </div>
               </div>
 

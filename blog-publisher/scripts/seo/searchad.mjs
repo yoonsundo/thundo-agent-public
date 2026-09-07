@@ -95,9 +95,17 @@ function mockKeywordList(hints) {
 /**
  * 키워드들의 절대 월간검색량 + 연관키워드 조회.
  *
- * @returns {Promise<{stats:Map<string,{total:number,pc:number,mobile:number,comp:string}>,
+ * @returns {Promise<{stats:Map<string,Stat>, all:Map<string,Stat>,
  *                    related:Array<{keyword:string,total:number}>, calls:number, failures:number}>}
- *   stats 키는 normKey() 정규화형. related 는 요청 키워드에 없던 것만(정규화 dedup).
+ *   Stat = {total,pc,mobile,comp}. 세 컨테이너의 키는 전부 normKey() 정규화형이다.
+ *   - stats   : **요청한** 키워드만.
+ *   - related : 요청에 없던 연관 키워드 목록(볼륨 내림차순) — 확장 후보 고르기용.
+ *   - all     : 요청분 + 연관분 **전부**의 검색량 조회판.
+ *
+ * ⚠ all 이 따로 있는 이유: 연관키워드를 후보로 승격시킨 호출측이 그 볼륨을 stats 에서
+ *   찾으면 영원히 undefined 다(연관분은 stats 에 안 들어간다). 실제로 keyword-demand 가
+ *   그렇게 조회해 연관 후보 전원이 볼륨 0 → 점수 0 으로 탈락했다(6주간 리포트에
+ *   searchad-rel 행 0개). 승격과 조회가 같은 통을 보게 하려고 추가했다(2026-09-07).
  */
 export async function fetchKeywordStats(keywords, { creds, requestDelayMs = 300 } = {}) {
   const mock = isMockMode();
@@ -106,6 +114,7 @@ export async function fetchKeywordStats(keywords, { creds, requestDelayMs = 300 
 
   const stats = new Map();
   const relatedMap = new Map();
+  const all = new Map();
   let calls = 0, failures = 0;
 
   for (let i = 0; i < hints.length; i += HINTS_PER_CALL) {
@@ -125,6 +134,9 @@ export async function fetchKeywordStats(keywords, { creds, requestDelayMs = 300 
       const pc = parseCount(row.monthlyPcQcCnt);
       const mobile = parseCount(row.monthlyMobileQcCnt);
       const entry = { total: pc + mobile, pc, mobile, comp: String(row.compIdx ?? '') };
+      // 요청분·연관분을 한 통에도 적재 — 같은 키가 여러 배치에 나오면 큰 쪽을 남긴다
+      // (배치마다 연관 절단 위치가 달라 작은 값이 나중에 덮어쓰는 것을 막는다).
+      if (!all.has(k) || all.get(k).total < entry.total) all.set(k, entry);
       if (requested.has(k)) {
         stats.set(k, entry);
       } else if (!relatedMap.has(k) || relatedMap.get(k).total < entry.total) {
@@ -136,5 +148,5 @@ export async function fetchKeywordStats(keywords, { creds, requestDelayMs = 300 
   }
 
   const related = [...relatedMap.values()].sort((a, b) => b.total - a.total);
-  return { stats, related, calls, failures };
+  return { stats, all, related, calls, failures };
 }

@@ -52,6 +52,19 @@ run_step keyword-demand scripts/seo/keyword-demand.mjs
 run_step cohort scripts/seo/cohort-report.mjs
 run_step internal-links scripts/seo/internal-links.mjs
 
+# 회복 계측(2026-09-07 신설) — 8월 스팸 업데이트 대응의 판정 지표.
+# 🔴 스팸 조치 회복은 **노출 총량보다 "몇 편이 검색에 잡히는가"에서 먼저 보인다.**
+#    그 지표를 지금까지 아무도 모으지 않았다. 기존 산출물(seo-metrics·naver-rank·run.json)만
+#    읽는 읽기전용 리포트라 비용이 없고, 실패해도 다른 단계를 막지 않는다(worst 로만 집계).
+# ⚠ 만들어 놓고 안 부르면 없는 것과 같다 — 이 저장소가 반복해서 당한 패턴이라 여기 배선한다.
+# 색인 상태 수집 — URL Inspection API(속성당 하루 2000 · 분당 600 쿼터). 발행물 203편이라
+# 한 스윕이 하루 한도의 10% 다. 크리덴셜이 없거나 부분 실패해도 exit 0(비차단) 계약이고,
+# 조회 못 한 URL 은 "색인 안 됨"이 아니라 미조회로 남는다.
+# 리포트보다 **앞**에 둔다 — 같은 회차에서 갱신된 색인 상태를 리포트가 읽어야 하기 때문이다.
+run_step index-inspect scripts/seo/index-inspect.mjs
+
+run_step recovery scripts/seo/recovery-report.mjs
+
 # 커밋하지 않는다 — 이 저장소는 여러 세션이 동시에 `git add -A` 를 돌려서, 백그라운드 cron 이
 # 스테이징에 끼어들면 남의 미커밋 작업이 함께 커밋된다(2026-07-30 실증). 측정 스크립트가
 # 감수할 위험이 아니다.
