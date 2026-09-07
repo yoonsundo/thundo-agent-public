@@ -61,6 +61,21 @@ describe('경영회의 승인함', () => {
     }
   });
 
+  /**
+   * ⚠ `human_task` 는 나머지와 성격이 다르다 — 승인하면 기계가 반영하는 앞의 둘과 달리
+   *    이쪽은 "할 일 확정"이고 실제 작업은 사람이 한다. 사이트 개선·코드 수정이 전부 이 부류라
+   *    같은 '기타'로 뭉뚱그리면 승인 버튼이 무엇을 하는지 오해하게 된다.
+   */
+  it('사람이 할 일은 기계가 반영하는 항목과 다르게 보인다', () => {
+    const ask: BoardApproval = { ...base, target_type: 'human_task', target: null, plan: null,
+      change: '검색 노출이 0에 가깝다 — 사이트 구조를 손봐야 한다' };
+    const { container } = render(<BoardApprovalList items={[ask]} />);
+    const text = container.textContent ?? '';
+    expect(text).toContain('사람이 할 일');
+    expect(text, '내부 식별자가 새면 안 된다').not.toContain('human_task');
+    expect(text, '대상·계획이 비어도 본문은 보여야 한다').toContain('사이트 구조를 손봐야');
+  });
+
   it('결정된 항목은 버튼 대신 결과를 보여준다', () => {
     const done: BoardApproval = {
       ...base, status: 'approved', decided_at: '2026-08-21T06:00:00Z',

@@ -19,7 +19,7 @@ const { routeDecision, normalizeTarget, isSafePath, feedbackKey, queueEvolveFeed
   await import('../board/apply.mjs');
 const { distribution, kstDay } = await import('../board/collect.mjs');
 const { STATUS_EXPLAIN, explainHold } = await import('../board/apply.mjs');
-const { toApprovalRows, toAskRows, approvalKey, enqueueApprovals } = await import('../board/approvals.mjs');
+const { toApprovalRows, toAskRows, ASK_CAP_PER_TEAM, approvalKey, enqueueApprovals } = await import('../board/approvals.mjs');
 const { collectDev, collectBlog } = await import('../board/collect.mjs');
 const { publishBoard } = await import('../board/publish-board.mjs');
 const { collectPending, windowStart, DEFAULT_WINDOW_DAYS } = await import('../board/backfill-approvals.mjs');
@@ -781,6 +781,34 @@ console.log('\n[18] 승인 후 실행 — 버튼이 헛돌지 않는다');
   ]);
   const keys = new Set([...rows, ...proposalRows].map(r => r.key));
   eq('제안과 사람요청의 멱등키가 충돌하지 않는다', keys.size, rows.length + proposalRows.length);
+
+  /**
+   * ⚠ 상한이 없으면 승인함이 읽히지 않는 목록이 된다. 실측(9-03~07) 팀장들이 매일 12~13건씩
+   *    올렸고 4팀이면 하루 50건, 일주일 350건이다. **읽히지 않는 큐는 없는 큐와 같아서**
+   *    도달시키려던 목적 자체가 무너진다.
+   */
+  {
+    const many = [{ team: 'dev', brief: { asks_human: Array.from({ length: 13 }, (_, i) => `요청 ${i + 1}`) } }];
+    const capped = toAskRows('2026-09-07', many);
+    eq(`팀당 ${ASK_CAP_PER_TEAM}건으로 제한한다`, capped.length, ASK_CAP_PER_TEAM);
+    eq('  └ 잘린 건수를 숨기지 않는다', capped.dropped, 13 - ASK_CAP_PER_TEAM);
+    ok('  └ 우선순위 앞쪽을 남긴다(팀장이 중요한 것부터 쓴다)', capped[0].change === '요청 1');
+    eq('  └ 상한 이하면 아무것도 잘리지 않는다',
+      toAskRows('2026-09-07', [{ team: 'x', brief: { asks_human: ['하나'] } }]).dropped, 0);
+  }
+
+  /**
+   * ⚠ 사람 조치 요청은 **자유 문장**이라 차단 검사를 돌리면 안 된다. 문장 안에 설정 키
+   *    이름이 스치기만 해도 "안전장치를 열려 한다"로 찍히는데, 기계가 반영하지 않는 항목이라
+   *    차단할 것 자체가 없다. 실측(103건 중 10건 오분류) — 이유 문구가 사람을 오도한다.
+   */
+  for (const text of ['발행 편수(pick.daily_target)는 그대로 두고 앵글만 조정해 달라',
+                      'publish.enabled 상태를 확인해 달라', '유사도 임계를 재검토해 달라']) {
+    eq(`사람 조치 요청은 지시 확정이다: ${text.slice(0, 18)}…`,
+      planApproved({ target_type: 'human_task', change: text }).kind, 'instruction');
+  }
+  eq('  └ 그래도 설정 경로의 보호 대상은 여전히 막힌다',
+    planApproved({ target_type: 'config', target: 'pick.daily_target', value: 5 }).kind, 'blocked');
 
   // 같은 브리핑을 두 번 넣어도 키가 같아야 재적재가 중복을 만들지 않는다.
   eq('같은 입력이면 같은 키(재적재해도 중복 없음)',

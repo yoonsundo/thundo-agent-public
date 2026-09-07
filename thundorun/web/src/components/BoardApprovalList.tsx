@@ -23,10 +23,17 @@ const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
   held:     { text: '보류함',   cls: 'tag tag-neutral' },
 };
 
-/** 대상 유형을 사람 말로. 'agent'·'config' 는 화면에 그대로 내보내지 않는다. */
+/**
+ * 대상 유형을 사람 말로. 'agent'·'config' 는 화면에 그대로 내보내지 않는다.
+ *
+ * ⚠ `human_task` 는 나머지와 성격이 다르다 — 앞의 둘은 승인하면 **기계가 반영**하지만
+ *    이쪽은 승인이 "할 일 확정"이고 실제 작업은 사람이 한다. 같은 '기타'로 뭉뚱그리면
+ *    승인 버튼이 무엇을 하는지 오해하게 된다(코드 수정·사이트 개선이 전부 이 부류다).
+ */
 function targetKind(t: string | null): string {
   if (t === 'agent') return '에이전트 업무 지침';
   if (t === 'config') return '설정값';
+  if (t === 'human_task') return '사람이 할 일';
   return '기타';
 }
 

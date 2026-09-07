@@ -18,6 +18,7 @@
  */
 process.env.RUN_MODE = process.env.RUN_MODE || 'mock';
 const { redactPublicIps } = await import('../report/insight-brief.mjs');
+const { PUBLIC_IPV4 } = await import('../kernel/net.mjs');
 
 /**
  * ⚠ 픽스처를 **IP 리터럴로 쓰지 않는다.** 소스에 점 넷으로 이어진 숫자가 그대로 있으면
@@ -75,6 +76,29 @@ eq('버전 문자열은 건드리지 않는다', redactPublicIps(`버전 ${VER}`
       .filter(ip => ip.split('.').every(o => Number(o) <= 255));
     ok(`실제 산출물에 공인 IP 원문이 없다${ips.length ? ` — ${ips.length}건 발견` : ''}`, ips.length === 0);
   }
+}
+
+/**
+ * 🔴 진짜 불변식은 이것 하나다 — **가린 뒤에는 게이트가 반응하지 않아야 한다.**
+ *
+ * 개별 형태를 하나씩 맞춰 보는 것으로는 부족하다. 예전엔 가림기와 게이트가 각자 정규식을
+ * 들고 있어서, 가렸는데도 게이트가 계속 막는 형태가 여섯 가지 있었다(앞뒤에 문자가 붙은 꼴 등).
+ * 그러면 파이프라인은 매일 멈추는데 "가렸다"는 착각만 남는다.
+ * 지금은 정의가 커널 하나뿐이므로 이 불변식이 구조적으로 성립하지만, 누가 갈라놓으면 여기서 죽는다.
+ */
+{
+  const P1 = ip('203', '0', '113', '21'), P2 = ip('198', '51', '100', '9');
+  const shapes = [
+    P1, `host${P1}`, `${P1}abc`, `user_${P1}`, `${P1}:443`, `${P1}/24`,
+    `${P1} · ${P2}`, `{"${P1}":4}`, ip('255', '255', '255', '0'),
+  ];
+  const survivors = shapes.filter(x => PUBLIC_IPV4.test(redactPublicIps(x)));
+  ok(`가린 뒤에는 게이트가 반응하지 않는다${survivors.length ? ` — 남은 형태: ${survivors.join(', ')}` : ''}`,
+    survivors.length === 0);
+
+  // 게이트가 애초에 문제 삼지 않는 것은 망가뜨리지도 않는다(진단 가치 보존).
+  for (const keep of ['Chrome/131.0.0.0', '6.18.33.1-microsoft-standard', VER])
+    eq(`  └ 게이트가 안 보는 것은 그대로: ${keep}`, redactPublicIps(keep), keep);
 }
 
 console.log(`\n관측 산출물 가림: ${passN} pass / ${failN} fail`);
