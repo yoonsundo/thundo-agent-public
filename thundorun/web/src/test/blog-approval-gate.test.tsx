@@ -316,7 +316,13 @@ describe('④ 상태 화이트리스트 — 모르는 값이 공개로 승격되
     expect(upserted?.status).toBe('ready');
   });
 
-  it('/api/publish 에 오타 status 를 보내도 published 로 승격되지 않는다 — 아니, 기본값을 쓴다', async () => {
+  /**
+   * 🔴 기본값이 `published` 였다 — status 를 빼먹거나 오타를 내면 **사람 검토 없이 공개**됐다.
+   *    "모르는 값은 공개로 올리지 않는다"는 성질이 기본값이 published 인 한 절반만 참이었다
+   *    (누락도 모르는 값인데 공개됐다). 관문에 예외를 두면 관문이 아니다.
+   *    2026-09-07 에 `ready` 로 바꾸고 `docs/EXTERNAL-BLOG-GUIDE.md` 도 함께 고쳤다.
+   */
+  it('/api/publish 에 status 를 빼먹거나 오타를 내면 승인 대기로 떨어진다', async () => {
     vi.stubEnv('BLOG_PUBLISH_API_KEY', 'test-key');
     const queries = useDb();
     const { POST } = await import('@/app/api/publish/route');
@@ -325,9 +331,8 @@ describe('④ 상태 화이트리스트 — 모르는 값이 공개로 승격되
       headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' },
       body: JSON.stringify({ title: '새 글', slug: 'brand-new-2', content: '## 소제목\n\n본문.', status: 'reddy' }),
     }));
-    // 이 엔드포인트의 문서화된 기본값은 'published' 다(외부 호출자 계약). 중요한 건
-    // 'reddy' 가 'ready' 로도, 임의 값으로도 저장되지 않는다는 것이다.
-    expect(queries.find((q) => q.upsert)?.upsert?.status).toBe('published');
+    // 오타('reddy')는 임의 값으로 저장되지 않고 안전한 기본값으로 떨어진다 — fail-closed.
+    expect(queries.find((q) => q.upsert)?.upsert?.status).toBe('ready');
   });
 });
 

@@ -87,7 +87,15 @@ export async function POST(req: NextRequest) {
   //    (파이프라인은 hub/blog-db.mjs 로 직접 upsert 한다) 사람이 운용하는 외부 발행 API 라,
   //    docs/EXTERNAL-BLOG-GUIDE.md 가 "즉시 라이브"로 공표한 계약을 말없이 바꾸면
   //    기존 호출자의 글이 사이트에서 사라진다. 승인 관문을 태우려면 'ready' 를 명시한다.
-  const status = normalizeStatus(body.status, 'published');
+  /**
+   * 🔴 기본값이 `'ready'` 다(2026-09-07). 예전엔 `'published'` 라 **status 를 빼먹거나
+   *    오타를 내면 사람 검토 없이 그대로 공개**됐다 — 승인 관문을 만든 이유와 정면으로
+   *    어긋난다. `normalizeStatus` 가 모르는 값을 공개로 올리지 않는다는 성질도
+   *    기본값이 published 인 한 절반만 참이었다(누락 = 모르는 값인데 공개됐다).
+   * ⚠ 문서화된 계약이 바뀐다 — `docs/EXTERNAL-BLOG-GUIDE.md` 의 "즉시 라이브"도 함께 고쳤다.
+   *    외부 기고도 이제 승인 대기로 들어간다. 관문에 예외를 두면 관문이 아니다.
+   */
+  const status = normalizeStatus(body.status, 'ready');
 
   // date
   const date = body.date != null ? String(body.date) : todayISODate(new Date());

@@ -28,6 +28,8 @@
     "blog:db:backfill": "node scripts/hub/blog-db.mjs backfill",
     "test:blog-db": "node scripts/test/blog-db.mjs",
     "test:blog-approval-gate": "node scripts/test/blog-approval-gate.test.mjs",
+    "test:publish-slot": "node scripts/test/publish-slot.test.mjs",
+    "test:runbook-consistency": "node scripts/test/runbook-consistency.test.mjs",
     "hub:worker": "RUN_MODE=mock node scripts/hub/worker.mjs",
     "hub:briefing": "RUN_MODE=mock node scripts/hub/briefing.mjs",
     "hub:bot": "RUN_MODE=mock node scripts/hub/telegram-bot.mjs poll",

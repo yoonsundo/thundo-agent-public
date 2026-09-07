@@ -26,6 +26,7 @@ import { makeLogger } from '../lib/log.mjs';
 import { mdToHtml, figureHtml, isLikelyHtml } from '../lib/md-to-html.mjs';
 
 import { isMainModule } from '../lib/main-module.mjs';
+import { checkSlot, WEEKLY_CAP } from '../lib/publish-slot.mjs';
 const log = makeLogger('hub/blog-db');
 
 // ─── 환경 ─────────────────────────────────────────────────────────────────────
@@ -316,9 +317,39 @@ export async function publishPostToDb(post) {
 }
 
 /** publishFileToDb(filepath) — 파일 경로 → 파싱 → upsert 편의 래퍼. */
+/**
+ * 이번 주 발행 슬롯 상태를 로그로 남긴다.
+ *
+ * ⚠ **차단하지 않는다.** 상한(주 3편)의 실제 방어선은 사람 승인 관문이다 — 과잉 발행분은
+ *    `ready` 로 쌓일 뿐 공개되지 않으므로 피해가 "토큰 낭비 + 승인 대기 적체"에 그친다.
+ *    여기서 막으면 백필·재적재 같은 정당한 경로까지 죽는다.
+ *
+ * 🔴 그래도 기록은 남긴다. 상한이 지금까지 **런북 프롬프트에만** 있었고, 프롬프트는
+ *    지켜지길 바라는 것이지 보장이 아니다. 넘긴 사실이 로그에 남아야 주간 회복 리포트가
+ *    "상한 위반"을 셀 수 있다(`recovery-metrics.mjs` 가 이 값을 본다).
+ */
+function noteSlot(filepath) {
+  try {
+    // `published/` 파일명이 `YYYY-MM-DD-slug.md` 라 날짜를 파일명에서 읽는다(DB 왕복 없음).
+    // ⚠ 절대경로다. 상대경로면 cwd 가 레포 루트가 아닐 때 ENOENT 가 나고, 아래 catch 가
+    //    그걸 삼켜 **상한 신호가 조용히 사라진다**(이 저장소의 단골 실패 모양).
+    const dates = readdirSync(join(paths.root, 'published'))
+      .map(f => /^(\d{4}-\d{2}-\d{2})-/.exec(f)?.[1])
+      .filter(Boolean);
+    const slot = checkSlot(new Date(), dates);
+    if (!slot.allowed) {
+      log.warn(`발행 슬롯 밖 — ${slot.reason} (파일 ${filepath}). 공개는 사람 승인이 정한다.`);
+    }
+  } catch (e) {
+    // 삼키되 침묵하지는 않는다 — 판정 실패가 발행을 막아선 안 되지만, 왜 신호가 없는지는 남긴다.
+    log.warn(`발행 슬롯 판정 실패(비차단): ${e.message}`);
+  }
+}
+
 export async function publishFileToDb(filepath) {
   const post = parsePublishedPost(filepath);
   if (!post) return { ok: false, reason: 'parse failed', file: filepath };
+  noteSlot(filepath);
   return publishPostToDb(post);
 }
 
